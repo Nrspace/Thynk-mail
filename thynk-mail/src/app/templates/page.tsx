@@ -2,7 +2,7 @@ import { createServerClient } from '@/lib/supabase';
 import Link from 'next/link';
 import { FileText, Plus, Edit } from 'lucide-react';
 
-const DEMO_TEAM = 'demo-team-id';
+import { DEMO_TEAM } from '@/lib/constants';
 
 export default async function TemplatesPage() {
   const db = createServerClient();

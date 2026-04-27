@@ -2,7 +2,7 @@ import { createServerClient } from '@/lib/supabase';
 import Link from 'next/link';
 import { Send, Plus } from 'lucide-react';
 
-const DEMO_TEAM = 'demo-team-id';
+import { DEMO_TEAM } from '@/lib/constants';
 
 const statusColors: Record<string, string> = {
   sent: 'badge-green', sending: 'badge-blue',

@@ -40,7 +40,7 @@ async function getRecentCampaigns(teamId: string) {
   return data ?? [];
 }
 
-const DEMO_TEAM = 'demo-team-id';
+import { DEMO_TEAM } from '@/lib/constants';
 
 export default async function DashboardPage() {
   const [stats, recent] = await Promise.all([

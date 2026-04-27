@@ -2,7 +2,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { createServerClient } from '@/lib/supabase';
 import { extractVariables } from '@/lib/template-renderer';
 
-const DEMO_TEAM = 'demo-team-id';
+import { DEMO_TEAM } from '@/lib/constants';
 
 export async function GET() {
   const db = createServerClient();
