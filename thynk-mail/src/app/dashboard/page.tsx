@@ -1,6 +1,7 @@
 import { createServerClient } from '@/lib/supabase';
 import { BarChart3, Send, Users, TrendingUp, Mail, CheckCircle } from 'lucide-react';
 import Link from 'next/link';
+import { DEMO_TEAM } from '@/lib/constants';
 
 async function getStats(teamId: string) {
   const db = createServerClient();
@@ -31,7 +32,6 @@ async function getStats(teamId: string) {
 
 async function getRecentCampaigns(teamId: string) {
   const db = createServerClient();
-  // Default to current year
   const startOfYear = new Date(new Date().getFullYear(), 0, 1).toISOString();
   const { data } = await db
     .from('campaigns')
@@ -43,8 +43,6 @@ async function getRecentCampaigns(teamId: string) {
   return data ?? [];
 }
 
-import { DEMO_TEAM } from '@/lib/constants';
-
 export const dynamic = 'force-dynamic';
 
 export default async function DashboardPage() {
@@ -54,12 +52,12 @@ export default async function DashboardPage() {
   ]);
 
   const cards = [
-    { label: 'Total Campaigns', value: stats.totalCampaigns, icon: Send,       color: 'text-teal-600',   bg: 'bg-teal-50' },
-    { label: 'Active',          value: stats.activeCampaigns, icon: TrendingUp, color: 'text-blue-600',   bg: 'bg-blue-50' },
-    { label: 'Total Contacts',  value: stats.totalContacts,   icon: Users,      color: 'text-purple-600', bg: 'bg-purple-50' },
-    { label: 'Emails Sent',     value: stats.totalSent,       icon: Mail,       color: 'text-orange-600', bg: 'bg-orange-50' },
-    { label: 'Opened',          value: stats.totalOpened,     icon: CheckCircle, color: 'text-green-600', bg: 'bg-green-50' },
-    { label: 'Open Rate',       value: `${stats.openRate}%`,  icon: BarChart3,  color: 'text-pink-600',   bg: 'bg-pink-50' },
+    { label: 'Total Campaigns', value: stats.totalCampaigns,  icon: Send,        color: 'text-teal-600',   bg: 'bg-teal-50' },
+    { label: 'Active',          value: stats.activeCampaigns, icon: TrendingUp,  color: 'text-blue-600',   bg: 'bg-blue-50' },
+    { label: 'Total Contacts',  value: stats.totalContacts,   icon: Users,       color: 'text-purple-600', bg: 'bg-purple-50' },
+    { label: 'Emails Sent',     value: stats.totalSent,       icon: Mail,        color: 'text-orange-600', bg: 'bg-orange-50' },
+    { label: 'Opened',          value: stats.totalOpened,     icon: CheckCircle, color: 'text-green-600',  bg: 'bg-green-50' },
+    { label: 'Open Rate',       value: `${stats.openRate}%`,  icon: BarChart3,   color: 'text-pink-600',   bg: 'bg-pink-50' },
   ];
 
   const statusColors: Record<string, string> = {
@@ -74,14 +72,14 @@ export default async function DashboardPage() {
   const currentYear = new Date().getFullYear();
 
   return (
-    <div className="p-8" style={{ background: 'var(--page-bg)', minHeight: '100vh' }}>
+    <div className="p-8 themed-page">
       {/* Header */}
       <div className="flex items-center justify-between mb-8">
         <div>
-          <h1 className="text-2xl font-semibold" style={{ color: 'var(--text-primary)' }}>Dashboard</h1>
-          <p className="text-sm mt-1" style={{ color: 'var(--text-muted)' }}>
+          <h1 className="text-2xl font-semibold themed-heading">Dashboard</h1>
+          <p className="text-sm mt-1 themed-muted">
             Welcome back — here&apos;s your overview ·{' '}
-            <span style={{ color: 'var(--brand-primary)' }}>Current Year {currentYear}</span>
+            <span className="themed-brand font-medium">Current Year {currentYear}</span>
           </p>
         </div>
         <Link href="/campaigns/new" className="btn-primary">
@@ -97,28 +95,25 @@ export default async function DashboardPage() {
             <div className={`w-9 h-9 rounded-lg ${bg} flex items-center justify-center mb-3`}>
               <Icon size={18} className={color} />
             </div>
-            <p className="text-2xl font-semibold" style={{ color: 'var(--text-primary)' }}>{value}</p>
-            <p className="text-xs mt-0.5" style={{ color: 'var(--text-muted)' }}>{label}</p>
+            <p className="text-2xl font-semibold themed-heading">{value}</p>
+            <p className="text-xs mt-0.5 themed-muted">{label}</p>
           </div>
         ))}
       </div>
 
       {/* Recent Campaigns */}
       <div className="card">
-        <div
-          className="flex items-center justify-between px-6 py-4"
-          style={{ borderBottom: '1px solid var(--card-border)' }}
-        >
-          <h2 className="font-semibold" style={{ color: 'var(--text-primary)' }}>
+        <div className="flex items-center justify-between px-6 py-4 themed-border-b">
+          <h2 className="font-semibold themed-heading">
             Recent Campaigns
-            <span className="ml-2 text-xs font-normal" style={{ color: 'var(--text-muted)' }}>({currentYear})</span>
+            <span className="ml-2 text-xs font-normal themed-muted">({currentYear})</span>
           </h2>
-          <Link href="/campaigns" className="text-sm hover:underline" style={{ color: 'var(--link-color)' }}>
+          <Link href="/campaigns" className="text-sm hover:underline themed-link">
             View all
           </Link>
         </div>
         {recent.length === 0 ? (
-          <div className="py-16 text-center" style={{ color: 'var(--text-muted)' }}>
+          <div className="py-16 text-center themed-muted">
             <Send size={32} className="mx-auto mb-3 opacity-30" />
             <p className="text-sm">No campaigns yet this year</p>
             <Link href="/campaigns/new" className="btn-primary mt-4 inline-flex">
@@ -131,25 +126,22 @@ export default async function DashboardPage() {
               <Link
                 key={c.id}
                 href={`/campaigns/${c.id}`}
-                className="flex items-center justify-between px-6 py-3.5 transition-colors"
-                style={{ borderBottom: '1px solid var(--table-divider)' }}
-                onMouseEnter={e => (e.currentTarget as HTMLAnchorElement).style.background = 'var(--table-row-hover)'}
-                onMouseLeave={e => (e.currentTarget as HTMLAnchorElement).style.background = 'transparent'}
+                className="campaign-row flex items-center justify-between px-6 py-3.5 transition-colors themed-border-b"
               >
                 <div>
-                  <p className="text-sm font-medium" style={{ color: 'var(--text-primary)' }}>{c.name}</p>
-                  <p className="text-xs mt-0.5" style={{ color: 'var(--text-muted)' }}>
+                  <p className="text-sm font-medium themed-heading">{c.name}</p>
+                  <p className="text-xs mt-0.5 themed-muted">
                     {new Date(c.created_at).toLocaleDateString()}
                   </p>
                 </div>
                 <div className="flex items-center gap-6">
                   <div className="text-right hidden md:block">
-                    <p className="text-sm font-medium" style={{ color: 'var(--text-primary)' }}>{c.sent_count ?? 0}</p>
-                    <p className="text-xs" style={{ color: 'var(--text-muted)' }}>Sent</p>
+                    <p className="text-sm font-medium themed-heading">{c.sent_count ?? 0}</p>
+                    <p className="text-xs themed-muted">Sent</p>
                   </div>
                   <div className="text-right hidden md:block">
-                    <p className="text-sm font-medium" style={{ color: 'var(--text-primary)' }}>{c.open_count ?? 0}</p>
-                    <p className="text-xs" style={{ color: 'var(--text-muted)' }}>Opens</p>
+                    <p className="text-sm font-medium themed-heading">{c.open_count ?? 0}</p>
+                    <p className="text-xs themed-muted">Opens</p>
                   </div>
                   <span className={statusColors[c.status] ?? 'badge-gray'}>{c.status}</span>
                 </div>
