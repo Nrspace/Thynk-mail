@@ -17,9 +17,19 @@ export async function GET(_req: NextRequest, { params }: Params) {
 export async function PATCH(req: NextRequest, { params }: Params) {
   const db = createServerClient();
   const body = await req.json();
+
+  // Sanitize — convert empty strings to null for nullable fields
+  const sanitized = { ...body };
+  const nullableFields = ['scheduled_at', 'reply_to', 'template_id', 'text_body'];
+  for (const field of nullableFields) {
+    if (field in sanitized && sanitized[field] === '') {
+      sanitized[field] = null;
+    }
+  }
+
   const { data, error } = await db
     .from('campaigns')
-    .update({ ...body, updated_at: new Date().toISOString() })
+    .update({ ...sanitized, updated_at: new Date().toISOString() })
     .eq('id', params.id)
     .select()
     .single();

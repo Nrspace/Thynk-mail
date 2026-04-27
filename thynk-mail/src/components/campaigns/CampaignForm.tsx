@@ -72,6 +72,16 @@ export default function CampaignForm({ mode, campaignId, initial }: Props) {
     return '';
   }
 
+  // Sanitize — convert empty strings to null for nullable fields
+  function sanitizeForm(f: CampaignFormData) {
+    return {
+      ...f,
+      scheduled_at: f.scheduled_at || null,
+      reply_to:     f.reply_to     || null,
+      template_id:  f.template_id  || null,
+    };
+  }
+
   // Save draft or schedule
   const handleSave = async (status: 'draft' | 'scheduled') => {
     const err = validate();
@@ -83,7 +93,7 @@ export default function CampaignForm({ mode, campaignId, initial }: Props) {
       const res  = await fetch(url, {
         method,
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ ...form, status }),
+        body: JSON.stringify({ ...sanitizeForm(form), status }),
       });
       const data = await res.json();
       if (data.id || data.error === undefined) router.push('/campaigns');
@@ -104,7 +114,7 @@ export default function CampaignForm({ mode, campaignId, initial }: Props) {
       const saveRes = await fetch(url, {
         method,
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ ...form, status: 'sending' }),
+        body: JSON.stringify({ ...sanitizeForm(form), status: 'sending' }),
       });
       const campaign = await saveRes.json();
       if (campaign.error) { setSendError(campaign.error); setSending(false); return; }
