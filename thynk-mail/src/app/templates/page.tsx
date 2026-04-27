@@ -4,6 +4,8 @@ import { FileText, Plus, Edit } from 'lucide-react';
 
 import { DEMO_TEAM } from '@/lib/constants';
 
+export const dynamic = 'force-dynamic';
+
 export default async function TemplatesPage() {
   const db = createServerClient();
   const { data: templates } = await db

@@ -42,6 +42,8 @@ async function getRecentCampaigns(teamId: string) {
 
 import { DEMO_TEAM } from '@/lib/constants';
 
+export const dynamic = 'force-dynamic';
+
 export default async function DashboardPage() {
   const [stats, recent] = await Promise.all([
     getStats(DEMO_TEAM),
