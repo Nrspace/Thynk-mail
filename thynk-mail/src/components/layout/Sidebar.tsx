@@ -11,6 +11,7 @@ import {
   Settings,
   Zap,
 } from 'lucide-react';
+import ThemeSwitcher from './ThemeSwitcher';
 
 const nav = [
   { href: '/dashboard',  icon: LayoutDashboard, label: 'Dashboard' },
@@ -23,14 +24,32 @@ const nav = [
 
 export default function Sidebar() {
   const pathname = usePathname();
+
   return (
-    <aside className="w-60 min-h-screen bg-gray-900 text-white flex flex-col">
+    <aside
+      className="w-60 min-h-screen flex flex-col transition-colors duration-200"
+      style={{
+        backgroundColor: 'var(--sidebar-bg)',
+        borderRight: '1px solid var(--sidebar-border)',
+      }}
+    >
       {/* Logo */}
-      <div className="flex items-center gap-2.5 px-5 py-5 border-b border-gray-800">
-        <div className="w-8 h-8 rounded-lg bg-teal-500 flex items-center justify-center">
-          <Zap size={16} className="text-white" />
+      <div
+        className="flex items-center gap-2.5 px-5 py-5"
+        style={{ borderBottom: '1px solid var(--sidebar-border)' }}
+      >
+        <div
+          className="w-8 h-8 rounded-lg flex items-center justify-center flex-shrink-0"
+          style={{ backgroundColor: 'var(--sidebar-logo-bg)' }}
+        >
+          <Zap size={16} style={{ color: 'var(--sidebar-logo-text)' }} />
         </div>
-        <span className="font-semibold text-lg tracking-tight">MailFlow</span>
+        <span
+          className="font-semibold text-lg tracking-tight"
+          style={{ color: 'var(--sidebar-text)' }}
+        >
+          MailFlow
+        </span>
       </div>
 
       {/* Nav */}
@@ -41,11 +60,23 @@ export default function Sidebar() {
             <Link
               key={href}
               href={href}
-              className={`flex items-center gap-3 px-3 py-2.5 rounded-lg text-sm font-medium transition-colors ${
-                active
-                  ? 'bg-teal-600 text-white'
-                  : 'text-gray-400 hover:bg-gray-800 hover:text-white'
-              }`}
+              className="flex items-center gap-3 px-3 py-2.5 rounded-lg text-sm font-medium transition-colors"
+              style={{
+                backgroundColor: active ? 'var(--sidebar-active-bg)' : 'transparent',
+                color: active ? 'var(--sidebar-active)' : 'var(--sidebar-muted)',
+              }}
+              onMouseEnter={e => {
+                if (!active) {
+                  (e.currentTarget as HTMLAnchorElement).style.backgroundColor = 'var(--sidebar-hover)';
+                  (e.currentTarget as HTMLAnchorElement).style.color = 'var(--sidebar-text)';
+                }
+              }}
+              onMouseLeave={e => {
+                if (!active) {
+                  (e.currentTarget as HTMLAnchorElement).style.backgroundColor = 'transparent';
+                  (e.currentTarget as HTMLAnchorElement).style.color = 'var(--sidebar-muted)';
+                }
+              }}
             >
               <Icon size={16} />
               {label}
@@ -55,10 +86,20 @@ export default function Sidebar() {
       </nav>
 
       {/* Footer */}
-      <div className="px-3 pb-4">
+      <div className="px-3 pb-3 space-y-0.5">
+        <ThemeSwitcher />
         <Link
           href="/settings"
-          className="flex items-center gap-3 px-3 py-2.5 rounded-lg text-sm font-medium text-gray-400 hover:bg-gray-800 hover:text-white transition-colors"
+          className="flex items-center gap-3 px-3 py-2.5 rounded-lg text-sm font-medium transition-colors"
+          style={{ color: 'var(--sidebar-muted)' }}
+          onMouseEnter={e => {
+            (e.currentTarget as HTMLAnchorElement).style.backgroundColor = 'var(--sidebar-hover)';
+            (e.currentTarget as HTMLAnchorElement).style.color = 'var(--sidebar-text)';
+          }}
+          onMouseLeave={e => {
+            (e.currentTarget as HTMLAnchorElement).style.backgroundColor = 'transparent';
+            (e.currentTarget as HTMLAnchorElement).style.color = 'var(--sidebar-muted)';
+          }}
         >
           <Settings size={16} />
           Settings

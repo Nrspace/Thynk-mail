@@ -1,15 +1,20 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { createServerClient } from '@/lib/supabase';
-
 import { DEMO_TEAM } from '@/lib/constants';
 
 export async function GET(req: NextRequest) {
   const db = createServerClient();
   const { searchParams } = new URL(req.url);
-  const range = searchParams.get('range') ?? '30'; // days
+  const rangeParam = searchParams.get('range') ?? 'year';
 
-  const since = new Date();
-  since.setDate(since.getDate() - parseInt(range, 10));
+  let since: Date;
+  if (rangeParam === 'year') {
+    // Current calendar year from Jan 1
+    since = new Date(new Date().getFullYear(), 0, 1);
+  } else {
+    since = new Date();
+    since.setDate(since.getDate() - parseInt(rangeParam, 10));
+  }
   const sinceISO = since.toISOString();
 
   // Campaign-level stats
@@ -38,7 +43,7 @@ export async function GET(req: NextRequest) {
   const clickRate = totals.sent > 0 ? +((totals.clicked / totals.sent) * 100).toFixed(1) : 0;
   const bounceRate = totals.sent > 0 ? +((totals.bounced / totals.sent) * 100).toFixed(1) : 0;
 
-  // Daily send volumes for chart (last N days)
+  // Daily send volumes for chart
   const { data: dailyLogs } = await db
     .from('send_logs')
     .select('sent_at, status')

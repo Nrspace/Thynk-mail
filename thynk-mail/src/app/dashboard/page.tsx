@@ -31,10 +31,13 @@ async function getStats(teamId: string) {
 
 async function getRecentCampaigns(teamId: string) {
   const db = createServerClient();
+  // Default to current year
+  const startOfYear = new Date(new Date().getFullYear(), 0, 1).toISOString();
   const { data } = await db
     .from('campaigns')
     .select('id, name, status, sent_count, open_count, created_at')
     .eq('team_id', teamId)
+    .gte('created_at', startOfYear)
     .order('created_at', { ascending: false })
     .limit(5);
   return data ?? [];
@@ -68,13 +71,18 @@ export default async function DashboardPage() {
     paused:    'badge-yellow',
   };
 
+  const currentYear = new Date().getFullYear();
+
   return (
-    <div className="p-8">
+    <div className="p-8" style={{ background: 'var(--page-bg)', minHeight: '100vh' }}>
       {/* Header */}
       <div className="flex items-center justify-between mb-8">
         <div>
-          <h1 className="text-2xl font-semibold text-gray-900">Dashboard</h1>
-          <p className="text-gray-500 text-sm mt-1">Welcome back — here&apos;s your overview</p>
+          <h1 className="text-2xl font-semibold" style={{ color: 'var(--text-primary)' }}>Dashboard</h1>
+          <p className="text-sm mt-1" style={{ color: 'var(--text-muted)' }}>
+            Welcome back — here&apos;s your overview ·{' '}
+            <span style={{ color: 'var(--brand-primary)' }}>Current Year {currentYear}</span>
+          </p>
         </div>
         <Link href="/campaigns/new" className="btn-primary">
           <Send size={15} />
@@ -89,50 +97,59 @@ export default async function DashboardPage() {
             <div className={`w-9 h-9 rounded-lg ${bg} flex items-center justify-center mb-3`}>
               <Icon size={18} className={color} />
             </div>
-            <p className="text-2xl font-semibold text-gray-900">{value}</p>
-            <p className="text-xs text-gray-500 mt-0.5">{label}</p>
+            <p className="text-2xl font-semibold" style={{ color: 'var(--text-primary)' }}>{value}</p>
+            <p className="text-xs mt-0.5" style={{ color: 'var(--text-muted)' }}>{label}</p>
           </div>
         ))}
       </div>
 
       {/* Recent Campaigns */}
       <div className="card">
-        <div className="flex items-center justify-between px-6 py-4 border-b border-gray-100">
-          <h2 className="font-semibold text-gray-900">Recent Campaigns</h2>
-          <Link href="/campaigns" className="text-sm text-teal-600 hover:underline">
+        <div
+          className="flex items-center justify-between px-6 py-4"
+          style={{ borderBottom: '1px solid var(--card-border)' }}
+        >
+          <h2 className="font-semibold" style={{ color: 'var(--text-primary)' }}>
+            Recent Campaigns
+            <span className="ml-2 text-xs font-normal" style={{ color: 'var(--text-muted)' }}>({currentYear})</span>
+          </h2>
+          <Link href="/campaigns" className="text-sm hover:underline" style={{ color: 'var(--link-color)' }}>
             View all
           </Link>
         </div>
         {recent.length === 0 ? (
-          <div className="py-16 text-center text-gray-400">
+          <div className="py-16 text-center" style={{ color: 'var(--text-muted)' }}>
             <Send size={32} className="mx-auto mb-3 opacity-30" />
-            <p className="text-sm">No campaigns yet</p>
+            <p className="text-sm">No campaigns yet this year</p>
             <Link href="/campaigns/new" className="btn-primary mt-4 inline-flex">
               Create your first campaign
             </Link>
           </div>
         ) : (
-          <div className="divide-y divide-gray-50">
+          <div>
             {recent.map((c) => (
               <Link
                 key={c.id}
                 href={`/campaigns/${c.id}`}
-                className="flex items-center justify-between px-6 py-3.5 hover:bg-gray-50 transition-colors"
+                className="flex items-center justify-between px-6 py-3.5 transition-colors"
+                style={{ borderBottom: '1px solid var(--table-divider)' }}
+                onMouseEnter={e => (e.currentTarget as HTMLAnchorElement).style.background = 'var(--table-row-hover)'}
+                onMouseLeave={e => (e.currentTarget as HTMLAnchorElement).style.background = 'transparent'}
               >
                 <div>
-                  <p className="text-sm font-medium text-gray-900">{c.name}</p>
-                  <p className="text-xs text-gray-400 mt-0.5">
+                  <p className="text-sm font-medium" style={{ color: 'var(--text-primary)' }}>{c.name}</p>
+                  <p className="text-xs mt-0.5" style={{ color: 'var(--text-muted)' }}>
                     {new Date(c.created_at).toLocaleDateString()}
                   </p>
                 </div>
                 <div className="flex items-center gap-6">
                   <div className="text-right hidden md:block">
-                    <p className="text-sm font-medium">{c.sent_count ?? 0}</p>
-                    <p className="text-xs text-gray-400">Sent</p>
+                    <p className="text-sm font-medium" style={{ color: 'var(--text-primary)' }}>{c.sent_count ?? 0}</p>
+                    <p className="text-xs" style={{ color: 'var(--text-muted)' }}>Sent</p>
                   </div>
                   <div className="text-right hidden md:block">
-                    <p className="text-sm font-medium">{c.open_count ?? 0}</p>
-                    <p className="text-xs text-gray-400">Opens</p>
+                    <p className="text-sm font-medium" style={{ color: 'var(--text-primary)' }}>{c.open_count ?? 0}</p>
+                    <p className="text-xs" style={{ color: 'var(--text-muted)' }}>Opens</p>
                   </div>
                   <span className={statusColors[c.status] ?? 'badge-gray'}>{c.status}</span>
                 </div>
