@@ -6,81 +6,110 @@ import DashboardCharts from '@/components/dashboard/DashboardCharts';
 
 async function getDashboardData(teamId: string) {
   const db = createServerClient();
-  const startOfYear  = new Date(new Date().getFullYear(), 0, 1).toISOString();
-  const startOfMonth = new Date(new Date().getFullYear(), new Date().getMonth(), 1).toISOString();
 
-  // ── 1. Team account IDs (used to scope send_logs to THIS team only) ──
+  // Use UTC-safe year/month boundaries
+  const now         = new Date();
+  const startOfYear = new Date(Date.UTC(now.getUTCFullYear(), 0, 1)).toISOString();
+  const startOfMonth= new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), 1)).toISOString();
+
+  // ── 1. Email accounts ──────────────────────────────────────────────────────
   const { data: accountRows } = await db
     .from('email_accounts')
     .select('id, name, email, provider, sent_today, daily_limit, is_active')
     .eq('team_id', teamId);
 
-  const accounts = accountRows ?? [];
+  const accounts       = accountRows ?? [];
   const teamAccountIds = accounts.map((a: any) => a.id);
 
-  // ── 2. Campaign + contact counts ──
+  // ── 2. Counts: campaigns + ALL contacts (not just subscribed) ──────────────
   const [
     { data: allCampaignsData, count: campaignCount },
-    { count: contactCount },
+    { count: totalContacts },
+    { count: subscribedContacts },
   ] = await Promise.all([
     db.from('campaigns').select('id, status', { count: 'exact' }).eq('team_id', teamId),
     db.from('contacts').select('id', { count: 'exact' }).eq('team_id', teamId),
+    db.from('contacts').select('id', { count: 'exact' }).eq('team_id', teamId).eq('is_subscribed', true),
   ]);
 
-  // ── 3. Single send_logs fetch scoped to team accounts, counted in JS ──
-  // FIX: old code had no account_id filter → counted ALL teams' logs
-  // FIX: old code counted every row as "sent" regardless of status (queued/failed included)
-  // FIX: old code split into 8 separate queries → numbers never agreed with each other
+  // ── 3. SINGLE send_logs fetch — source of truth for ALL email metrics ──────
+  // Scoped to THIS team's accounts + current year + must have been sent (not queued/failed)
   const { data: yearLogs } = teamAccountIds.length > 0
     ? await db
         .from('send_logs')
-        .select('status, sent_at, account_id')
+        .select('id, status, sent_at, account_id, campaign_id')
         .in('account_id', teamAccountIds)
         .gte('sent_at', startOfYear)
         .not('sent_at', 'is', null)
     : { data: [] };
 
+  const logs = yearLogs ?? [];
+
+  // ── 4. Compute all metrics from the ONE fetch ──────────────────────────────
   let totalSent = 0, totalOpened = 0, totalClicked = 0, totalBounced = 0, totalFailed = 0;
   let monthSent = 0, monthOpened = 0;
   const accountSentMap: Record<string, number> = {};
+  const campaignLogMap: Record<string, { sent: number; opened: number; clicked: number; bounced: number }> = {};
 
-  for (const log of (yearLogs ?? [])) {
-    const isMonth = (log.sent_at as string) >= startOfMonth;
-    const sent    = ['sent', 'delivered', 'opened', 'clicked'].includes(log.status);
-    const opened  = log.status === 'opened' || log.status === 'clicked'; // click implies open
-    const clicked = log.status === 'clicked';
-    const bounced = log.status === 'bounced';
-    const failed  = log.status === 'failed';
+  for (const log of logs) {
+    const sentAt   = log.sent_at as string;
+    const isMonth  = sentAt >= startOfMonth;
+    const isSent   = ['sent', 'delivered', 'opened', 'clicked'].includes(log.status);
+    const isOpened = log.status === 'opened' || log.status === 'clicked';
+    const isClick  = log.status === 'clicked';
+    const isBounce = log.status === 'bounced';
+    const isFail   = log.status === 'failed';
 
-    if (sent)    { totalSent++;    if (isMonth) monthSent++;   }
-    if (opened)  { totalOpened++;  if (isMonth) monthOpened++; }
-    if (clicked)   totalClicked++;
-    if (bounced)   totalBounced++;
-    if (failed)    totalFailed++;
-    if (sent && log.account_id) {
+    if (isSent)   { totalSent++;    if (isMonth) monthSent++;    }
+    if (isOpened) { totalOpened++;  if (isMonth) monthOpened++;  }
+    if (isClick)    totalClicked++;
+    if (isBounce)   totalBounced++;
+    if (isFail)     totalFailed++;
+
+    // Per-account totals (for the Email Accounts widget)
+    if (isSent && log.account_id) {
       accountSentMap[log.account_id] = (accountSentMap[log.account_id] ?? 0) + 1;
+    }
+
+    // Per-campaign totals — SAME logic as Reports API so numbers always match
+    const cid = log.campaign_id as string;
+    if (cid) {
+      if (!campaignLogMap[cid]) campaignLogMap[cid] = { sent: 0, opened: 0, clicked: 0, bounced: 0 };
+      if (isSent)   campaignLogMap[cid].sent++;
+      if (isOpened) campaignLogMap[cid].opened++;
+      if (isClick)  campaignLogMap[cid].clicked++;
+      if (isBounce) campaignLogMap[cid].bounced++;
     }
   }
 
-  // Enrich accounts with year-to-date total sent count
   const accountsWithSent = accounts.map((a: any) => ({
     ...a,
     total_sent: accountSentMap[a.id] ?? 0,
   }));
 
-  // ── 4. Recent campaigns — NO date filter so ALL campaigns appear ──
-  // FIX: old code had .gte('created_at', startOfYear) which hid older campaigns
+  // ── 5. Recent campaigns — joined with live send_logs counts ───────────────
+  // NO more cached sent_count columns — always use send_logs so it matches
+  // the Campaigns page and Reports page exactly.
   const { data: recentRows } = await db
     .from('campaigns')
-    .select('id, name, status, sent_count, open_count, click_count, bounce_count, created_at')
+    .select('id, name, status, created_at, sent_at')
     .eq('team_id', teamId)
     .order('created_at', { ascending: false })
     .limit(7);
 
+  const recentCampaigns = (recentRows ?? []).map((c: any) => ({
+    ...c,
+    sent_count:   campaignLogMap[c.id]?.sent    ?? 0,
+    open_count:   campaignLogMap[c.id]?.opened  ?? 0,
+    click_count:  campaignLogMap[c.id]?.clicked ?? 0,
+    bounce_count: campaignLogMap[c.id]?.bounced ?? 0,
+  }));
+
   return {
-    totalCampaigns:  campaignCount ?? 0,
-    activeCampaigns: (allCampaignsData ?? []).filter((c: any) => ['sending','scheduled'].includes(c.status)).length,
-    totalContacts:   contactCount ?? 0,
+    totalCampaigns:   campaignCount    ?? 0,
+    activeCampaigns:  (allCampaignsData ?? []).filter((c: any) => ['sending','scheduled'].includes(c.status)).length,
+    totalContacts:    totalContacts    ?? 0,
+    subscribedContacts: subscribedContacts ?? 0,
     totalSent, totalOpened, totalClicked, totalBounced, totalFailed,
     openRate:    totalSent > 0 ? +((totalOpened  / totalSent) * 100).toFixed(1) : 0,
     clickRate:   totalSent > 0 ? +((totalClicked / totalSent) * 100).toFixed(1) : 0,
@@ -89,7 +118,7 @@ async function getDashboardData(teamId: string) {
     monthOpened,
     monthOpenRate: monthSent > 0 ? +((monthOpened / monthSent) * 100).toFixed(1) : 0,
     accounts: accountsWithSent,
-    recentCampaigns: recentRows ?? [],
+    recentCampaigns,
   };
 }
 
@@ -127,14 +156,14 @@ export default async function DashboardPage() {
         {[
           { label: 'Campaigns',   value: d.totalCampaigns,  icon: Send,         color: 'text-teal-600',   bg: 'bg-teal-50'   },
           { label: 'Active',      value: d.activeCampaigns, icon: TrendingUp,   color: 'text-blue-600',   bg: 'bg-blue-50'   },
-          { label: 'Contacts',    value: d.totalContacts,   icon: Users,        color: 'text-purple-600', bg: 'bg-purple-50' },
+          { label: 'Contacts',    value: d.totalContacts,   icon: Users,        color: 'text-purple-600', bg: 'bg-purple-50', title: `${d.subscribedContacts} subscribed` },
           { label: 'Sent (Year)', value: d.totalSent,       icon: Mail,         color: 'text-orange-600', bg: 'bg-orange-50' },
           { label: 'Opened',      value: d.totalOpened,     icon: CheckCircle,  color: 'text-green-600',  bg: 'bg-green-50'  },
           { label: 'Open Rate',   value: `${d.openRate}%`,  icon: BarChart3,    color: 'text-indigo-600', bg: 'bg-indigo-50' },
           { label: 'Bounced',     value: d.totalBounced,    icon: AlertCircle,  color: 'text-red-600',    bg: 'bg-red-50'    },
           { label: 'Failed',      value: d.totalFailed,     icon: AlertCircle,  color: 'text-orange-600', bg: 'bg-orange-50' },
-        ].map(({ label, value, icon: Icon, color, bg }) => (
-          <div key={label} className="card p-3 hover:shadow-md transition-shadow">
+        ].map(({ label, value, icon: Icon, color, bg, title }: any) => (
+          <div key={label} className="card p-3 hover:shadow-md transition-shadow" title={title}>
             <div className={`w-7 h-7 rounded-lg ${bg} flex items-center justify-center mb-2`}>
               <Icon size={14} className={color} />
             </div>
@@ -142,6 +171,7 @@ export default async function DashboardPage() {
               {typeof value === 'number' ? value.toLocaleString() : value}
             </p>
             <p className="text-xs mt-0.5 leading-tight themed-muted">{label}</p>
+            {title && <p className="text-xs themed-muted opacity-60">{title}</p>}
           </div>
         ))}
       </div>
@@ -181,7 +211,7 @@ export default async function DashboardPage() {
           />
         </div>
 
-        {/* Email Accounts widget — shows daily send usage (sent_today/daily_limit) */}
+        {/* Email Accounts widget */}
         <div className="card p-5">
           <div className="flex items-center justify-between mb-4">
             <h2 className="font-semibold themed-secondary">Email Accounts</h2>
@@ -213,7 +243,7 @@ export default async function DashboardPage() {
                           style={{ background: `${pc}18`, color: pc }}>{a.provider}</span>
                       </div>
                       <span className="text-xs themed-muted flex-shrink-0 ml-2">
-                        {a.total_sent}/{a.daily_limit}
+                        {a.total_sent.toLocaleString()}/{a.daily_limit.toLocaleString()}
                       </span>
                     </div>
                     <div className="h-1.5 rounded-full overflow-hidden" style={{ background: 'var(--card-border)' }}>
@@ -231,7 +261,7 @@ export default async function DashboardPage() {
         </div>
       </div>
 
-      {/* Recent Campaigns — last 7, no date restriction */}
+      {/* Recent Campaigns — live send_logs counts, matches Campaigns & Reports pages */}
       <div className="card">
         <div className="flex items-center justify-between px-6 py-4 themed-border-b">
           <h2 className="font-semibold themed-heading">
@@ -271,11 +301,11 @@ export default async function DashboardPage() {
                     <td className="px-4 py-3 text-xs themed-muted">
                       {new Date(c.created_at).toLocaleDateString()}
                     </td>
-                    <td className="px-4 py-3 tabular-nums themed-secondary">{c.sent_count ?? 0}</td>
-                    <td className="px-4 py-3 tabular-nums" style={{ color: '#10b981' }}>{c.open_count ?? 0}</td>
+                    <td className="px-4 py-3 tabular-nums themed-secondary">{c.sent_count.toLocaleString()}</td>
+                    <td className="px-4 py-3 tabular-nums" style={{ color: '#10b981' }}>{c.open_count.toLocaleString()}</td>
                     <td className="px-4 py-3 tabular-nums themed-muted">{or}{or !== '—' ? '%' : ''}</td>
-                    <td className="px-4 py-3 tabular-nums" style={{ color: '#a855f7' }}>{c.click_count ?? 0}</td>
-                    <td className="px-4 py-3 tabular-nums text-red-500">{c.bounce_count ?? 0}</td>
+                    <td className="px-4 py-3 tabular-nums" style={{ color: '#a855f7' }}>{c.click_count.toLocaleString()}</td>
+                    <td className="px-4 py-3 tabular-nums text-red-500">{c.bounce_count.toLocaleString()}</td>
                     <td className="px-4 py-3">
                       <span className={statusColors[c.status] ?? 'badge-gray'}>{c.status}</span>
                     </td>
