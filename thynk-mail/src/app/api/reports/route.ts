@@ -81,12 +81,21 @@ export async function GET(req: NextRequest) {
     .not('sent_at', 'is', null);
 
   // Daily aggregation
-  const dailyMap: Record<string, { sent: number; opened: number; clicked: number; bounced: number; failed: number }> = {};
+  // Each send_log row represents ONE email recipient. The status progresses:
+  //   sent → delivered → opened → clicked
+  // So we count ALL non-failed/non-bounced statuses as "sent" (1 email was dispatched),
+  // and then count downstream events additively — NOT by re-counting the same row.
+  const dailyMap: Record<string, { sent: number; delivered: number; opened: number; clicked: number; bounced: number; failed: number }> = {};
   for (const log of dailyLogs ?? []) {
     const day = (log.sent_at as string).slice(0, 10);
-    if (!dailyMap[day]) dailyMap[day] = { sent: 0, opened: 0, clicked: 0, bounced: 0, failed: 0 };
+    if (!dailyMap[day]) dailyMap[day] = { sent: 0, delivered: 0, opened: 0, clicked: 0, bounced: 0, failed: 0 };
+    // Every non-failed row counts as 1 sent email
     if (['sent','delivered','opened','clicked'].includes(log.status)) dailyMap[day].sent++;
+    // Delivered = confirmed delivered OR further engaged (opened/clicked implies delivered)
+    if (['delivered','opened','clicked'].includes(log.status)) dailyMap[day].delivered++;
+    // Opened = status is opened OR clicked (click implies prior open)
     if (log.status === 'opened' || log.status === 'clicked') dailyMap[day].opened++;
+    // Clicked = only explicit click events
     if (log.status === 'clicked') dailyMap[day].clicked++;
     if (log.status === 'bounced') dailyMap[day].bounced++;
     if (log.status === 'failed') dailyMap[day].failed++;
@@ -96,15 +105,16 @@ export async function GET(req: NextRequest) {
     .map(([date, vals]) => ({ date, ...vals }));
 
   // Monthly aggregation
-  const monthlyMap: Record<string, { month: string; sent: number; opened: number; clicked: number; bounced: number; failed: number }> = {};
+  const monthlyMap: Record<string, { month: string; sent: number; delivered: number; opened: number; clicked: number; bounced: number; failed: number }> = {};
   for (const d of daily) {
     const m = d.date.slice(0, 7);
-    if (!monthlyMap[m]) monthlyMap[m] = { month: m, sent: 0, opened: 0, clicked: 0, bounced: 0, failed: 0 };
-    monthlyMap[m].sent    += d.sent;
-    monthlyMap[m].opened  += d.opened;
-    monthlyMap[m].clicked += d.clicked;
-    monthlyMap[m].bounced += d.bounced;
-    monthlyMap[m].failed  += d.failed;
+    if (!monthlyMap[m]) monthlyMap[m] = { month: m, sent: 0, delivered: 0, opened: 0, clicked: 0, bounced: 0, failed: 0 };
+    monthlyMap[m].sent      += d.sent;
+    monthlyMap[m].delivered += d.delivered;
+    monthlyMap[m].opened    += d.opened;
+    monthlyMap[m].clicked   += d.clicked;
+    monthlyMap[m].bounced   += d.bounced;
+    monthlyMap[m].failed    += d.failed;
   }
   const monthly = Object.values(monthlyMap).sort((a, b) => a.month.localeCompare(b.month));
 
@@ -126,7 +136,10 @@ export async function GET(req: NextRequest) {
     const aid = log.account_id as string;
     if (!accountMap[aid]) accountMap[aid] = { sent: 0, delivered: 0, opened: 0, clicked: 0, bounced: 0, failed: 0 };
     if (['sent','delivered','opened','clicked'].includes(log.status)) accountMap[aid].sent++;
-    if (log.status === 'delivered' || log.status === 'opened' || log.status === 'clicked') accountMap[aid].delivered++;
+    // Only count 'delivered' status as delivered — NOT opened/clicked.
+    // opened/clicked are separate downstream events, not re-deliveries.
+    // This prevents Delivered from falsely equalling Opened.
+    if (log.status === 'delivered') accountMap[aid].delivered++;
     if (log.status === 'opened' || log.status === 'clicked') accountMap[aid].opened++;
     if (log.status === 'clicked') accountMap[aid].clicked++;
     if (log.status === 'bounced') accountMap[aid].bounced++;
