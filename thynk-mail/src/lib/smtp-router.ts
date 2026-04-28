@@ -58,16 +58,40 @@ function buildTransport(account: EmailAccount) {
         },
       });
 
-    case 'zoho':
+    case 'zoho': {
+      const email = account.smtp_user || account.email;
+
+      // If admin manually set smtp_host, always respect it.
+      // Otherwise derive from the email domain:
+      //   - anything ending in .in  → smtp.zoho.in  (India DC)
+      //   - anything ending in .eu  → smtp.zoho.eu  (EU DC)
+      //   - everything else         → smtp.zoho.com (Global DC)
+      let zohoHost = account.smtp_host ?? '';
+      if (!zohoHost) {
+        const domain = email.split('@')[1]?.toLowerCase() ?? '';
+        if (domain.endsWith('.in')) {
+          zohoHost = 'smtp.zoho.in';
+        } else if (domain.endsWith('.eu')) {
+          zohoHost = 'smtp.zoho.eu';
+        } else {
+          zohoHost = 'smtp.zoho.com';
+        }
+      }
+
       return nodemailer.createTransport({
-        host: 'smtp.zoho.com',
+        host: zohoHost,
         port: 587,
-        secure: false,
+        secure: false,       // STARTTLS on 587
+        requireTLS: true,    // Zoho rejects plain connections
         auth: {
-          user: account.smtp_user || account.email,
-          pass,
+          user: email,
+          pass,              // must be an App Password, not the account password
+        },
+        tls: {
+          rejectUnauthorized: false,
         },
       });
+    }
 
     case 'outlook':
       return nodemailer.createTransport({
