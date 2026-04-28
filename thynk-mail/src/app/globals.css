@@ -130,3 +130,17 @@ body {
 ::-webkit-scrollbar { width: 6px; height: 6px; }
 ::-webkit-scrollbar-track { background: transparent; }
 ::-webkit-scrollbar-thumb { background: #cbd5e1; border-radius: 3px; }
+
+/* ── Themed utility classes (safe in Server Components — no JS events) ── */
+.themed-page        { background: var(--page-bg); min-height: 100vh; }
+.themed-heading     { color: var(--text-primary); }
+.themed-secondary   { color: var(--text-secondary); }
+.themed-muted       { color: var(--text-muted); }
+.themed-brand       { color: var(--brand-primary); }
+.themed-link        { color: var(--link-color); }
+.themed-border-b    { border-bottom: 1px solid var(--card-border); }
+.themed-border-t    { border-top: 1px solid var(--card-border); }
+
+/* Hover via pure CSS — no JS event handlers needed */
+.campaign-row:hover { background: var(--table-row-hover); }
+.themed-tr:hover    { background: var(--table-row-hover); }
