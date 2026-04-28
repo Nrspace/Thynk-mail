@@ -2,6 +2,7 @@
 import { useState, useEffect, useCallback } from 'react';
 import {
   LineChart, Line,
+  BarChart, Bar,
   XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, Legend,
   PieChart, Pie, Cell, RadialBarChart, RadialBar,
 } from 'recharts';
@@ -367,18 +368,18 @@ export default function ReportsPage() {
                     <div className="h-48 flex items-center justify-center text-sm themed-muted">No data for this period</div>
                   ) : (
                     <ResponsiveContainer width="100%" height={220}>
-                      <LineChart data={daily} margin={{ top: 5, right: 10, left: -15, bottom: 0 }}>
+                      <BarChart data={daily} margin={{ top: 5, right: 10, left: -15, bottom: 0 }}>
                         <CartesianGrid strokeDasharray="3 3" stroke="var(--card-border)" />
                         <XAxis dataKey="date" tick={{ fontSize: 11, fill: 'var(--text-muted)' }} tickFormatter={d => d.slice(5)} />
                         <YAxis tick={{ fontSize: 11, fill: 'var(--text-muted)' }} />
                         <Tooltip content={<ChartTooltip />} />
                         <Legend iconType="circle" iconSize={8} />
                         {DATASETS.filter(d => dailyDS.has(d.key) && !['bounced','failed'].includes(d.key)).map(d => (
-                          <Line key={d.key} type="monotone" dataKey={d.key} stroke={d.color} strokeWidth={2} dot={false} name={d.label} />
+                          <Bar key={d.key} dataKey={d.key} fill={d.color} name={d.label} radius={[3,3,0,0]} maxBarSize={32} />
                         ))}
-                        {dailyDS.has('bounced') && <Line type="monotone" dataKey="bounced" stroke="#ef4444" strokeWidth={2} dot={false} name="Bounced" />}
-                        {dailyDS.has('failed')  && <Line type="monotone" dataKey="failed"  stroke="#f97316" strokeWidth={2} dot={false} name="Failed"  />}
-                      </LineChart>
+                        {dailyDS.has('bounced') && <Bar dataKey="bounced" fill="#ef4444" name="Bounced" radius={[3,3,0,0]} maxBarSize={32} />}
+                        {dailyDS.has('failed')  && <Bar dataKey="failed"  fill="#f97316" name="Failed"  radius={[3,3,0,0]} maxBarSize={32} />}
+                      </BarChart>
                     </ResponsiveContainer>
                   )}
                 </div>
@@ -425,15 +426,15 @@ export default function ReportsPage() {
                       <div className="h-44 flex items-center justify-center text-sm themed-muted">No data</div>
                     ) : (
                       <ResponsiveContainer width="100%" height={180}>
-                        <LineChart data={daily} margin={{ top: 5, right: 10, left: -15, bottom: 0 }}>
+                        <BarChart data={daily} margin={{ top: 5, right: 10, left: -15, bottom: 0 }}>
                           <CartesianGrid strokeDasharray="3 3" stroke="var(--card-border)" />
                           <XAxis dataKey="date" tick={{ fontSize: 11, fill: 'var(--text-muted)' }} tickFormatter={d => d.slice(5)} />
                           <YAxis tick={{ fontSize: 11, fill: 'var(--text-muted)' }} />
                           <Tooltip content={<ChartTooltip />} />
                           <Legend iconType="circle" iconSize={8} />
-                          {bounceDS.has('bounced') && <Line type="monotone" dataKey="bounced" stroke="#ef4444" strokeWidth={2} dot={false} name="Bounced" />}
-                          {bounceDS.has('failed')  && <Line type="monotone" dataKey="failed"  stroke="#f97316" strokeWidth={2} dot={false} name="Failed"  />}
-                        </LineChart>
+                          {bounceDS.has('bounced') && <Bar dataKey="bounced" fill="#ef4444" name="Bounced" radius={[3,3,0,0]} maxBarSize={32} />}
+                          {bounceDS.has('failed')  && <Bar dataKey="failed"  fill="#f97316" name="Failed"  radius={[3,3,0,0]} maxBarSize={32} />}
+                        </BarChart>
                       </ResponsiveContainer>
                     )}
                   </div>
@@ -458,16 +459,16 @@ export default function ReportsPage() {
                         />
                       </div>
                       <ResponsiveContainer width="100%" height={260}>
-                        <LineChart data={monthly} margin={{ top: 5, right: 10, left: -15, bottom: 0 }}>
+                        <BarChart data={monthly} margin={{ top: 5, right: 10, left: -15, bottom: 0 }}>
                           <CartesianGrid strokeDasharray="3 3" stroke="var(--card-border)" />
                           <XAxis dataKey="month" tick={{ fontSize: 11, fill: 'var(--text-muted)' }} tickFormatter={fmtMonth} />
                           <YAxis tick={{ fontSize: 11, fill: 'var(--text-muted)' }} />
                           <Tooltip content={<ChartTooltip />} labelFormatter={fmtMonth} />
                           <Legend iconType="circle" iconSize={8} />
                           {DATASETS.filter(d => monthlyDS.has(d.key)).map(d => (
-                            <Line key={d.key} type="monotone" dataKey={d.key} stroke={d.color} strokeWidth={2} dot={{ r: 4 }} name={d.label} />
+                            <Bar key={d.key} dataKey={d.key} fill={d.color} name={d.label} radius={[3,3,0,0]} maxBarSize={32} />
                           ))}
-                        </LineChart>
+                        </BarChart>
                       </ResponsiveContainer>
                     </div>
 
@@ -499,15 +500,15 @@ export default function ReportsPage() {
                       <div className="card p-5">
                         <h2 className="font-semibold themed-secondary mb-4">Monthly Bounces &amp; Failures</h2>
                         <ResponsiveContainer width="100%" height={200}>
-                          <LineChart data={monthly} margin={{ top: 5, right: 10, left: -15, bottom: 0 }}>
+                          <BarChart data={monthly} margin={{ top: 5, right: 10, left: -15, bottom: 0 }}>
                             <CartesianGrid strokeDasharray="3 3" stroke="var(--card-border)" />
                             <XAxis dataKey="month" tick={{ fontSize: 11, fill: 'var(--text-muted)' }} tickFormatter={fmtMonth} />
                             <YAxis tick={{ fontSize: 11, fill: 'var(--text-muted)' }} />
                             <Tooltip content={<ChartTooltip />} labelFormatter={fmtMonth} />
                             <Legend iconType="circle" iconSize={8} />
-                            <Line type="monotone" dataKey="bounced" stroke="#ef4444" strokeWidth={2} dot={{ r: 4 }} name="Bounced" />
-                            <Line type="monotone" dataKey="failed"  stroke="#f97316" strokeWidth={2} dot={{ r: 4 }} name="Failed"  />
-                          </LineChart>
+                            <Bar dataKey="bounced" fill="#ef4444" name="Bounced" radius={[3,3,0,0]} maxBarSize={32} />
+                            <Bar dataKey="failed"  fill="#f97316" name="Failed"  radius={[3,3,0,0]} maxBarSize={32} />
+                          </BarChart>
                         </ResponsiveContainer>
                       </div>
                     </div>
@@ -629,7 +630,7 @@ export default function ReportsPage() {
                     <div className="card p-5 mb-6">
                       <h2 className="font-semibold themed-secondary mb-4">Account Comparison — Sent vs Opened vs Clicked</h2>
                       <ResponsiveContainer width="100%" height={240}>
-                        <LineChart
+                        <BarChart
                           data={accounts.map(a => ({ name: a.name.length > 12 ? a.name.slice(0,12)+'…' : a.name, sent: a.sent, opened: a.opened, clicked: a.clicked }))}
                           margin={{ top: 5, right: 10, left: -15, bottom: 0 }}
                         >
@@ -638,10 +639,10 @@ export default function ReportsPage() {
                           <YAxis tick={{ fontSize: 11, fill: 'var(--text-muted)' }} />
                           <Tooltip content={<ChartTooltip />} />
                           <Legend iconType="circle" iconSize={8} />
-                          <Line type="monotone" dataKey="sent"    stroke="#14b8a6" strokeWidth={2} dot={{ r: 5 }} name="Sent"    />
-                          <Line type="monotone" dataKey="opened"  stroke="#10b981" strokeWidth={2} dot={{ r: 5 }} name="Opened"  />
-                          <Line type="monotone" dataKey="clicked" stroke="#a855f7" strokeWidth={2} dot={{ r: 5 }} name="Clicked" />
-                        </LineChart>
+                          <Bar dataKey="sent"    fill="#14b8a6" name="Sent"    radius={[3,3,0,0]} maxBarSize={32} />
+                          <Bar dataKey="opened"  fill="#10b981" name="Opened"  radius={[3,3,0,0]} maxBarSize={32} />
+                          <Bar dataKey="clicked" fill="#a855f7" name="Clicked" radius={[3,3,0,0]} maxBarSize={32} />
+                        </BarChart>
                       </ResponsiveContainer>
                     </div>
 

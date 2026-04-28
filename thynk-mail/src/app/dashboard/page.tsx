@@ -34,7 +34,7 @@ async function getDashboardData(teamId: string) {
   const { data: yearLogs } = teamAccountIds.length > 0
     ? await db
         .from('send_logs')
-        .select('status, sent_at')
+        .select('status, sent_at, account_id')
         .in('account_id', teamAccountIds)
         .gte('sent_at', startOfYear)
         .not('sent_at', 'is', null)
@@ -42,6 +42,7 @@ async function getDashboardData(teamId: string) {
 
   let totalSent = 0, totalOpened = 0, totalClicked = 0, totalBounced = 0, totalFailed = 0;
   let monthSent = 0, monthOpened = 0;
+  const accountSentMap: Record<string, number> = {};
 
   for (const log of (yearLogs ?? [])) {
     const isMonth = (log.sent_at as string) >= startOfMonth;
@@ -56,7 +57,16 @@ async function getDashboardData(teamId: string) {
     if (clicked)   totalClicked++;
     if (bounced)   totalBounced++;
     if (failed)    totalFailed++;
+    if (sent && log.account_id) {
+      accountSentMap[log.account_id] = (accountSentMap[log.account_id] ?? 0) + 1;
+    }
   }
+
+  // Enrich accounts with year-to-date total sent count
+  const accountsWithSent = accounts.map((a: any) => ({
+    ...a,
+    total_sent: accountSentMap[a.id] ?? 0,
+  }));
 
   // ── 4. Recent campaigns — NO date filter so ALL campaigns appear ──
   // FIX: old code had .gte('created_at', startOfYear) which hid older campaigns
@@ -78,7 +88,7 @@ async function getDashboardData(teamId: string) {
     monthSent,
     monthOpened,
     monthOpenRate: monthSent > 0 ? +((monthOpened / monthSent) * 100).toFixed(1) : 0,
-    accounts,
+    accounts: accountsWithSent,
     recentCampaigns: recentRows ?? [],
   };
 }
@@ -185,7 +195,7 @@ export default async function DashboardPage() {
             <div className="space-y-3">
               {d.accounts.map((a: any) => {
                 const pct = a.daily_limit > 0
-                  ? Math.min(100, Math.round((a.sent_today / a.daily_limit) * 100))
+                  ? Math.min(100, Math.round((a.total_sent / a.daily_limit) * 100))
                   : 0;
                 const providerColors: Record<string, string> = {
                   brevo: '#0B96F5', gmail: '#EA4335', zoho: '#1A73E8',
@@ -203,7 +213,7 @@ export default async function DashboardPage() {
                           style={{ background: `${pc}18`, color: pc }}>{a.provider}</span>
                       </div>
                       <span className="text-xs themed-muted flex-shrink-0 ml-2">
-                        {a.sent_today}/{a.daily_limit}
+                        {a.total_sent}/{a.daily_limit}
                       </span>
                     </div>
                     <div className="h-1.5 rounded-full overflow-hidden" style={{ background: 'var(--card-border)' }}>

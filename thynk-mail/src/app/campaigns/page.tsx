@@ -31,6 +31,25 @@ export default async function CampaignsPage() {
 
   const rows = data ?? [];
 
+  // Fetch send_logs counts to match Reports page (avoids discrepancy with cached sent_count)
+  const campaignIds = rows.map((c: any) => c.id);
+  const logCountMap: Record<string, { sent: number; opened: number; clicked: number; bounced: number }> = {};
+  if (campaignIds.length > 0) {
+    const { data: logRows } = await db
+      .from('send_logs')
+      .select('campaign_id, status')
+      .in('campaign_id', campaignIds)
+      .not('sent_at', 'is', null);
+    for (const l of (logRows ?? [])) {
+      if (!logCountMap[l.campaign_id]) logCountMap[l.campaign_id] = { sent: 0, opened: 0, clicked: 0, bounced: 0 };
+      const s = l.status;
+      if (['sent','delivered','opened','clicked'].includes(s)) logCountMap[l.campaign_id].sent++;
+      if (s === 'opened' || s === 'clicked') logCountMap[l.campaign_id].opened++;
+      if (s === 'clicked') logCountMap[l.campaign_id].clicked++;
+      if (s === 'bounced') logCountMap[l.campaign_id].bounced++;
+    }
+  }
+
   return (
     <div className="p-8">
       <div className="flex items-center justify-between mb-8">
@@ -69,8 +88,9 @@ export default async function CampaignsPage() {
             </thead>
             <tbody className="divide-y divide-gray-50">
               {rows.map((c) => {
-                const openRate = c.sent_count > 0
-                  ? ((c.open_count / c.sent_count) * 100).toFixed(1) : '—';
+                const lc = logCountMap[c.id] ?? { sent: 0, opened: 0, clicked: 0, bounced: 0 };
+                const openRate = lc.sent > 0
+                  ? ((lc.opened / lc.sent) * 100).toFixed(1) : '—';
                 return (
                   <tr key={c.id} className="hover:bg-gray-50 transition-colors">
                     <td className="px-6 py-3.5">
@@ -83,15 +103,15 @@ export default async function CampaignsPage() {
                     <td className="px-4 py-3.5">
                       <span className={statusColors[c.status] ?? 'badge-gray'}>{c.status}</span>
                     </td>
-                    <td className="px-4 py-3.5 text-right tabular-nums">{c.sent_count ?? 0}</td>
+                    <td className="px-4 py-3.5 text-right tabular-nums">{lc.sent}</td>
                     <td className="px-4 py-3.5 text-right tabular-nums">
-                      {c.open_count ?? 0}
+                      {lc.opened}
                       {openRate !== '—' && (
                         <span className="text-gray-400 text-xs ml-1">({openRate}%)</span>
                       )}
                     </td>
-                    <td className="px-4 py-3.5 text-right tabular-nums">{c.click_count ?? 0}</td>
-                    <td className="px-4 py-3.5 text-right tabular-nums">{c.bounce_count ?? 0}</td>
+                    <td className="px-4 py-3.5 text-right tabular-nums">{lc.clicked}</td>
+                    <td className="px-4 py-3.5 text-right tabular-nums">{lc.bounced}</td>
                     <td className="px-4 py-3.5 text-xs text-gray-400">
                       {new Date(c.created_at).toLocaleDateString()}
                     </td>

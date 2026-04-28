@@ -161,6 +161,9 @@ export default function EmailStatusPage() {
   const [selectedAccounts, setSelectedAccounts] = useState<string[]>([]);
   const [accounts,         setAccounts]         = useState<Account[]>([]);
   const [accountsLoading,  setAccountsLoading]  = useState(true);
+  const [campaigns,        setCampaigns]        = useState<Campaign[]>([]);
+  const [campaignsLoading, setCampaignsLoading] = useState(false);
+  const [selectedCampaign, setSelectedCampaign] = useState('');
   const [statusFilter,     setStatusFilter]     = useState('');
   const [logs,             setLogs]             = useState<LogRow[]>([]);
   const [total,            setTotal]            = useState(0);
@@ -176,11 +179,25 @@ export default function EmailStatusPage() {
       .catch(() => setAccountsLoading(false));
   }, []);
 
+  // Fetch campaigns whenever selected accounts change
+  useEffect(() => {
+    if (selectedAccounts.length === 0) { setCampaigns([]); setSelectedCampaign(''); return; }
+    setCampaignsLoading(true);
+    setSelectedCampaign('');
+    const params = new URLSearchParams();
+    params.set('account_ids', selectedAccounts.join(','));
+    fetch(`/api/email-status/campaigns?${params}`)
+      .then(r => r.json())
+      .then(j => { setCampaigns(j.campaigns ?? []); setCampaignsLoading(false); })
+      .catch(() => { setCampaigns([]); setCampaignsLoading(false); });
+  }, [selectedAccounts]);
+
   const search = useCallback(async (p = 1) => {
     setLoading(true);
     setPage(p);
     const params = new URLSearchParams();
     if (selectedAccounts.length > 0) params.set('account_ids', selectedAccounts.join(','));
+    if (selectedCampaign) params.set('campaign_id', selectedCampaign);
     if (statusFilter) params.set('status', statusFilter);
     params.set('page', String(p));
     const r = await fetch(`/api/email-status?${params}`).then(r => r.json());
@@ -229,6 +246,23 @@ export default function EmailStatusPage() {
               </div>
             ) : (
               <AccountMultiSelect accounts={accounts} selected={selectedAccounts} onChange={setSelectedAccounts} />
+            )}
+            {/* Campaign dropdown — shown only after account(s) selected */}
+            {selectedAccounts.length > 0 && (
+              <div className="relative flex-1">
+                <Mail size={14} className="absolute left-3 top-1/2 -translate-y-1/2" style={{ color: 'var(--text-muted)' }} />
+                <select
+                  className="input pl-9 w-full appearance-none"
+                  value={selectedCampaign}
+                  onChange={e => setSelectedCampaign(e.target.value)}
+                  disabled={campaignsLoading}
+                >
+                  <option value="">{campaignsLoading ? 'Loading campaigns…' : 'All Campaigns'}</option>
+                  {campaigns.map(c => (
+                    <option key={c.id} value={c.id}>{c.name}</option>
+                  ))}
+                </select>
+              </div>
             )}
             <div className="relative">
               <Filter size={14} className="absolute left-3 top-1/2 -translate-y-1/2" style={{ color: 'var(--text-muted)' }} />
