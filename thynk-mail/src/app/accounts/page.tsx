@@ -13,7 +13,7 @@ interface Account {
 const PROVIDER_META: Record<Provider, { label: string; badge: string; host: string; port: number; limitDefault: number; color: string }> = {
   brevo:   { label: 'Brevo',          badge: 'badge-blue',   host: 'smtp-relay.brevo.com',  port: 587, limitDefault: 300,  color: '#0B96F5' },
   gmail:   { label: 'Gmail',          badge: 'badge-red',    host: 'smtp.gmail.com',         port: 587, limitDefault: 500,  color: '#EA4335' },
-  zoho:    { label: 'Zoho Mail',      badge: 'badge-blue',   host: 'smtp.zoho.com',          port: 587, limitDefault: 200,  color: '#1A73E8' },
+  zoho:    { label: 'Zoho Mail',      badge: 'badge-blue',   host: '',                       port: 587, limitDefault: 200,  color: '#1A73E8' },
   outlook: { label: 'Outlook / 365',  badge: 'badge-blue',   host: 'smtp.office365.com',     port: 587, limitDefault: 300,  color: '#0078D4' },
   smtp:    { label: 'Custom SMTP',    badge: 'badge-gray',   host: '',                        port: 587, limitDefault: 500,  color: '#64748b' },
 };
@@ -44,10 +44,13 @@ const PROVIDER_TIPS: Record<Provider, { steps: string[]; docsUrl: string; warnin
   zoho: {
     docsUrl: 'https://accounts.zoho.com/home',
     steps: [
-      'Sign up at zoho.com/mail (free plan: 200 emails/day)',
-      'Go to Settings → Mail Accounts → SMTP',
-      'Use smtp.zoho.com:587 with your Zoho email + password',
-      'Enable IMAP/SMTP access in your Zoho Mail settings',
+      'Go to Zoho Mail → Settings → Security → App Passwords',
+      'Click "Generate New Password", name it "MailFlow", copy the 16-char password',
+      'SMTP host is auto-detected from your email domain — no manual entry needed:',
+      '  • @anything.in  →  smtp.zoho.in  (India DC)',
+      '  • @anything.eu  →  smtp.zoho.eu  (EU DC)',
+      '  • everything else  →  smtp.zoho.com  (Global DC)',
+      'You can also override the host manually in the SMTP Host field if needed',
     ],
   },
   outlook: {
@@ -382,6 +385,11 @@ export default function AccountsPage() {
                       <p className="text-sm text-gray-500 mt-0.5">{a.email}</p>
                       {result?.ok === false && result.error && (
                         <p className="text-xs text-red-500 mt-0.5 max-w-sm truncate">{result.error}</p>
+                      )}
+                      {result?.ok === false && result.error?.toLowerCase().includes('auth') && a.provider === 'zoho' && (
+                        <p className="text-xs text-amber-600 mt-1 max-w-sm">
+                          💡 Zoho tip: use an <strong>App Password</strong> (Settings → Security → App Passwords), not your account password. SMTP host is auto-detected from your email domain (.in → zoho.in, .eu → zoho.eu, else zoho.com). You can override it in the SMTP Host field.
+                        </p>
                       )}
                     </div>
                   </div>
