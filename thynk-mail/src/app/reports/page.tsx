@@ -1,13 +1,13 @@
 'use client';
 import { useState, useEffect, useCallback } from 'react';
 import {
-  BarChart, Bar, LineChart, Line, AreaChart, Area,
+  BarChart, Bar, LineChart, Line,
   XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, Legend,
   PieChart, Pie, Cell, RadialBarChart, RadialBar,
 } from 'recharts';
 import {
   BarChart3, Send, Eye, MousePointer, AlertCircle, UserMinus,
-  TrendingUp, TrendingDown, Mail, Activity, ChevronDown,
+  TrendingUp, TrendingDown, Mail, Activity, ChevronDown, Calendar,
 } from 'lucide-react';
 
 /* ─── Types ─── */
@@ -21,11 +21,16 @@ interface MonthPoint  { month: string; sent: number; opened: number; clicked: nu
 interface AccountStat { id: string; name: string; email: string; provider: string; sent: number; delivered: number; opened: number; clicked: number; bounced: number; failed: number; }
 interface CampaignRow { id: string; name: string; status: string; sent_count: number; open_count: number; click_count: number; bounce_count: number; created_at: string; }
 
+/* ─── Time range options ─── */
 const RANGE_OPTIONS = [
-  { label: 'Last 7 days',  value: '7'    },
-  { label: 'Last 30 days', value: '30'   },
-  { label: 'Last 90 days', value: '90'   },
-  { label: 'Current Year', value: 'year' },
+  { label: 'Today',          value: 'today'  },
+  { label: 'This Week',      value: 'week'   },
+  { label: '15 Days',        value: '15'     },
+  { label: '30 Days',        value: '30'     },
+  { label: '90 Days',        value: '90'     },
+  { label: '180 Days',       value: '180'    },
+  { label: 'Current Year',   value: 'year'   },
+  { label: 'Custom Period',  value: 'custom' },
 ];
 
 const STATUS_COLORS: Record<string, string> = {
@@ -38,7 +43,16 @@ const PROVIDER_COLORS: Record<string, string> = {
   outlook: '#0078D4', smtp: '#64748b',
 };
 
-const CHART_PALETTE = ['#14b8a6','#6366f1','#a855f7','#f59e0b','#ef4444','#10b981'];
+/* Dataset definitions */
+const DATASETS = [
+  { key: 'sent',    label: 'Sent',    color: '#14b8a6' },
+  { key: 'opened',  label: 'Opened',  color: '#6366f1' },
+  { key: 'clicked', label: 'Clicked', color: '#a855f7' },
+  { key: 'bounced', label: 'Bounced', color: '#ef4444' },
+  { key: 'failed',  label: 'Failed',  color: '#f97316' },
+] as const;
+
+type DatasetKey = typeof DATASETS[number]['key'];
 
 function fmtMonth(m: string) {
   const [y, mo] = m.split('-');
@@ -56,9 +70,7 @@ function Delta({ val, suffix = '' }: { val: number; suffix?: string }) {
   );
 }
 
-/* ─── Radial gauge ─── */
 function Gauge({ value, label, color }: { value: number; label: string; color: string }) {
-  const data = [{ value, fill: color }, { value: 100 - value, fill: 'transparent' }];
   return (
     <div className="flex flex-col items-center">
       <div className="relative w-24 h-24">
@@ -76,7 +88,6 @@ function Gauge({ value, label, color }: { value: number; label: string; color: s
   );
 }
 
-/* ─── Custom tooltip ─── */
 function ChartTooltip({ active, payload, label }: any) {
   if (!active || !payload?.length) return null;
   return (
@@ -93,8 +104,36 @@ function ChartTooltip({ active, payload, label }: any) {
   );
 }
 
+/* ─── Dataset toggle pill row ─── */
+function DatasetToggles({ active, onChange }: { active: Set<DatasetKey>; onChange: (k: DatasetKey) => void }) {
+  return (
+    <div className="flex flex-wrap gap-2">
+      {DATASETS.map(d => {
+        const on = active.has(d.key);
+        return (
+          <button
+            key={d.key}
+            onClick={() => onChange(d.key)}
+            className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-xs font-medium border transition-all"
+            style={{
+              borderColor: on ? d.color : 'var(--input-border)',
+              background:  on ? `${d.color}18` : 'transparent',
+              color:       on ? d.color : 'var(--text-muted)',
+            }}
+          >
+            <span className="w-2 h-2 rounded-full" style={{ background: on ? d.color : 'var(--input-border)' }} />
+            {d.label}
+          </button>
+        );
+      })}
+    </div>
+  );
+}
+
 export default function ReportsPage() {
   const [range, setRange]         = useState('year');
+  const [fromDate, setFromDate]   = useState('');
+  const [toDate, setToDate]       = useState('');
   const [tab, setTab]             = useState<'overview'|'monthly'|'accounts'|'campaigns'>('overview');
   const [totals, setTotals]       = useState<Totals | null>(null);
   const [daily, setDaily]         = useState<DailyPoint[]>([]);
@@ -103,52 +142,68 @@ export default function ReportsPage() {
   const [campaigns, setCampaigns] = useState<CampaignRow[]>([]);
   const [loading, setLoading]     = useState(true);
 
+  // Per-chart dataset visibility
+  const [dailyDS,   setDailyDS]   = useState<Set<DatasetKey>>(new Set(['sent','opened','clicked']));
+  const [monthlyDS, setMonthlyDS] = useState<Set<DatasetKey>>(new Set(['sent','opened','clicked']));
+  const [bounceDS,  setBounceDS]  = useState<Set<DatasetKey>>(new Set(['bounced','failed']));
+
+  function toggleDS(set: Set<DatasetKey>, key: DatasetKey, setter: (s: Set<DatasetKey>) => void) {
+    const next = new Set(set);
+    next.has(key) ? next.delete(key) : next.add(key);
+    setter(next);
+  }
+
   const load = useCallback(async () => {
     setLoading(true);
-    const r = await fetch(`/api/reports?range=${range}`).then(r => r.json());
+    const params = new URLSearchParams({ range });
+    if (range === 'custom') {
+      if (fromDate) params.set('from', fromDate);
+      if (toDate)   params.set('to',   toDate);
+    }
+    const r = await fetch(`/api/reports?${params}`).then(r => r.json());
     setTotals(r.totals);
     setDaily(r.daily ?? []);
     setMonthly(r.monthly ?? []);
     setAccounts(r.accountStats ?? []);
     setCampaigns(r.campaigns ?? []);
     setLoading(false);
-  }, [range]);
+  }, [range, fromDate, toDate]);
 
-  useEffect(() => { load(); }, [load]);
+  useEffect(() => {
+    if (range !== 'custom') load();
+  }, [range]);
 
   const selectedLabel = RANGE_OPTIONS.find(o => o.value === range)?.label ?? 'Current Year';
 
-  /* ── Funnel data ── */
   const funnelData = totals ? [
     { name: 'Sent',    value: totals.sent,    fill: '#14b8a6' },
     { name: 'Opened',  value: totals.opened,  fill: '#6366f1' },
     { name: 'Clicked', value: totals.clicked, fill: '#a855f7' },
   ] : [];
 
-  /* ── Stat cards ── */
   const statCards = totals ? [
-    { label: 'Total Sent',    value: totals.sent,              icon: Send,         color: 'text-teal-600',   bg: 'bg-teal-50',   trend: 0 },
-    { label: 'Opened',        value: totals.opened,            icon: Eye,          color: 'text-green-600',  bg: 'bg-green-50',  trend: 0 },
-    { label: 'Open Rate',     value: `${totals.openRate}%`,    icon: BarChart3,    color: 'text-blue-600',   bg: 'bg-blue-50',   trend: 0 },
-    { label: 'Clicked',       value: totals.clicked,           icon: MousePointer, color: 'text-purple-600', bg: 'bg-purple-50', trend: 0 },
-    { label: 'Click Rate',    value: `${totals.clickRate}%`,   icon: Activity,     color: 'text-indigo-600', bg: 'bg-indigo-50', trend: 0 },
-    { label: 'Bounced',       value: totals.bounced,           icon: AlertCircle,  color: 'text-red-600',    bg: 'bg-red-50',    trend: 0 },
-    { label: 'Bounce Rate',   value: `${totals.bounceRate}%`,  icon: TrendingDown, color: 'text-orange-600', bg: 'bg-orange-50', trend: 0 },
-    { label: 'Unsubscribed',  value: totals.unsubscribed,      icon: UserMinus,    color: 'text-gray-600',   bg: 'bg-gray-100',  trend: 0 },
+    { label: 'Total Sent',    value: totals.sent,              icon: Send,         color: 'text-teal-600',   bg: 'bg-teal-50'   },
+    { label: 'Opened',        value: totals.opened,            icon: Eye,          color: 'text-green-600',  bg: 'bg-green-50'  },
+    { label: 'Open Rate',     value: `${totals.openRate}%`,    icon: BarChart3,    color: 'text-blue-600',   bg: 'bg-blue-50'   },
+    { label: 'Clicked',       value: totals.clicked,           icon: MousePointer, color: 'text-purple-600', bg: 'bg-purple-50' },
+    { label: 'Click Rate',    value: `${totals.clickRate}%`,   icon: Activity,     color: 'text-indigo-600', bg: 'bg-indigo-50' },
+    { label: 'Bounced',       value: totals.bounced,           icon: AlertCircle,  color: 'text-red-600',    bg: 'bg-red-50'    },
+    { label: 'Bounce Rate',   value: `${totals.bounceRate}%`,  icon: TrendingDown, color: 'text-orange-600', bg: 'bg-orange-50' },
+    { label: 'Unsubscribed',  value: totals.unsubscribed,      icon: UserMinus,    color: 'text-gray-600',   bg: 'bg-gray-100'  },
   ] : [];
 
   const tabs = [
-    { id: 'overview',   label: 'Overview'          },
-    { id: 'monthly',    label: 'Monthly Reports'   },
-    { id: 'accounts',   label: 'Account Stats'     },
-    { id: 'campaigns',  label: 'Campaigns'         },
+    { id: 'overview',  label: 'Overview'        },
+    { id: 'monthly',   label: 'Monthly Reports' },
+    { id: 'accounts',  label: 'Account Stats'   },
+    { id: 'campaigns', label: 'Campaigns'       },
   ] as const;
 
   return (
     <div className="themed-page min-h-screen">
       {/* ── Header ── */}
       <div className="px-8 pt-8 pb-0">
-        <div className="flex items-center justify-between mb-6">
+        <div className="flex items-start justify-between mb-6 gap-4">
           <div>
             <h1 className="text-2xl font-semibold themed-heading">Reports</h1>
             <p className="text-sm mt-1 themed-muted">
@@ -156,15 +211,50 @@ export default function ReportsPage() {
               <span className="themed-brand font-medium">{selectedLabel}</span>
             </p>
           </div>
-          <div className="relative">
-            <select
-              className="input w-44 appearance-none pr-8 cursor-pointer"
-              value={range}
-              onChange={e => setRange(e.target.value)}
-            >
-              {RANGE_OPTIONS.map(o => <option key={o.value} value={o.value}>{o.label}</option>)}
-            </select>
-            <ChevronDown size={14} className="absolute right-2.5 top-1/2 -translate-y-1/2 pointer-events-none" style={{ color: 'var(--text-muted)' }}/>
+
+          {/* Time range selector */}
+          <div className="flex flex-col gap-2 items-end">
+            <div className="flex items-center gap-2">
+              <div className="relative">
+                <select
+                  className="input w-48 appearance-none pr-8 cursor-pointer"
+                  value={range}
+                  onChange={e => setRange(e.target.value)}
+                >
+                  {RANGE_OPTIONS.map(o => <option key={o.value} value={o.value}>{o.label}</option>)}
+                </select>
+                <ChevronDown size={14} className="absolute right-2.5 top-1/2 -translate-y-1/2 pointer-events-none" style={{ color: 'var(--text-muted)' }}/>
+              </div>
+            </div>
+
+            {/* Custom date picker */}
+            {range === 'custom' && (
+              <div className="flex items-center gap-2">
+                <Calendar size={14} style={{ color: 'var(--text-muted)' }} />
+                <input
+                  type="date"
+                  className="input text-sm w-36"
+                  value={fromDate}
+                  onChange={e => setFromDate(e.target.value)}
+                  placeholder="From"
+                />
+                <span className="text-xs themed-muted">to</span>
+                <input
+                  type="date"
+                  className="input text-sm w-36"
+                  value={toDate}
+                  onChange={e => setToDate(e.target.value)}
+                  placeholder="To"
+                />
+                <button
+                  onClick={load}
+                  disabled={!fromDate || loading}
+                  className="btn-primary px-4 py-1.5 text-sm disabled:opacity-50"
+                >
+                  Apply
+                </button>
+              </div>
+            )}
           </div>
         </div>
 
@@ -213,7 +303,6 @@ export default function ReportsPage() {
 
                 {/* Gauge + Funnel row */}
                 <div className="grid grid-cols-1 xl:grid-cols-3 gap-6 mb-6">
-                  {/* Engagement gauges */}
                   <div className="card p-5">
                     <h2 className="font-semibold themed-secondary mb-4">Engagement Rates</h2>
                     <div className="flex justify-around">
@@ -224,8 +313,6 @@ export default function ReportsPage() {
                       </>}
                     </div>
                   </div>
-
-                  {/* Funnel pie */}
                   <div className="card p-5">
                     <h2 className="font-semibold themed-secondary mb-4">Delivery Funnel</h2>
                     {funnelData.every(d => d.value === 0) ? (
@@ -242,18 +329,16 @@ export default function ReportsPage() {
                       </ResponsiveContainer>
                     )}
                   </div>
-
-                  {/* Top metric strip */}
                   <div className="card p-5">
                     <h2 className="font-semibold themed-secondary mb-4">Summary</h2>
                     {totals && (
                       <div className="space-y-3">
                         {[
-                          { label: 'Emails Sent',   val: totals.sent,         color: '#14b8a6' },
-                          { label: 'Opened',         val: totals.opened,       color: '#6366f1' },
-                          { label: 'Clicked',        val: totals.clicked,      color: '#a855f7' },
-                          { label: 'Bounced',        val: totals.bounced,      color: '#ef4444' },
-                          { label: 'Unsubscribed',   val: totals.unsubscribed, color: '#f59e0b' },
+                          { label: 'Emails Sent',  val: totals.sent,         color: '#14b8a6' },
+                          { label: 'Opened',        val: totals.opened,       color: '#6366f1' },
+                          { label: 'Clicked',       val: totals.clicked,      color: '#a855f7' },
+                          { label: 'Bounced',       val: totals.bounced,      color: '#ef4444' },
+                          { label: 'Unsubscribed',  val: totals.unsubscribed, color: '#f59e0b' },
                         ].map(row => (
                           <div key={row.label} className="flex items-center gap-3">
                             <div className="w-2 h-2 rounded-full flex-shrink-0" style={{ background: row.color }} />
@@ -269,36 +354,49 @@ export default function ReportsPage() {
                   </div>
                 </div>
 
-                {/* Area chart — daily volume */}
+                {/* Daily Send Volume — Bar chart with dataset toggles */}
                 <div className="card p-5 mb-6">
-                  <h2 className="font-semibold themed-secondary mb-4">Daily Send Volume</h2>
+                  <div className="flex items-center justify-between mb-4 gap-3 flex-wrap">
+                    <h2 className="font-semibold themed-secondary">Daily Send Volume</h2>
+                    <DatasetToggles
+                      active={dailyDS}
+                      onChange={k => toggleDS(dailyDS, k, setDailyDS)}
+                    />
+                  </div>
                   {daily.length === 0 ? (
                     <div className="h-48 flex items-center justify-center text-sm themed-muted">No data for this period</div>
                   ) : (
                     <ResponsiveContainer width="100%" height={220}>
-                      <AreaChart data={daily} margin={{ top: 5, right: 10, left: -15, bottom: 0 }}>
-                        <defs>
-                          <linearGradient id="gSent"    x1="0" y1="0" x2="0" y2="1"><stop offset="5%"  stopColor="#14b8a6" stopOpacity={0.3}/><stop offset="95%" stopColor="#14b8a6" stopOpacity={0}/></linearGradient>
-                          <linearGradient id="gOpened"  x1="0" y1="0" x2="0" y2="1"><stop offset="5%"  stopColor="#6366f1" stopOpacity={0.3}/><stop offset="95%" stopColor="#6366f1" stopOpacity={0}/></linearGradient>
-                          <linearGradient id="gClicked" x1="0" y1="0" x2="0" y2="1"><stop offset="5%"  stopColor="#a855f7" stopOpacity={0.3}/><stop offset="95%" stopColor="#a855f7" stopOpacity={0}/></linearGradient>
-                        </defs>
+                      <BarChart data={daily} margin={{ top: 5, right: 10, left: -15, bottom: 0 }}>
                         <CartesianGrid strokeDasharray="3 3" stroke="var(--card-border)" />
                         <XAxis dataKey="date" tick={{ fontSize: 11, fill: 'var(--text-muted)' }} tickFormatter={d => d.slice(5)} />
                         <YAxis tick={{ fontSize: 11, fill: 'var(--text-muted)' }} />
                         <Tooltip content={<ChartTooltip />} />
                         <Legend iconType="circle" iconSize={8} />
-                        <Area type="monotone" dataKey="sent"    stroke="#14b8a6" fill="url(#gSent)"    strokeWidth={2} name="Sent"    dot={false} />
-                        <Area type="monotone" dataKey="opened"  stroke="#6366f1" fill="url(#gOpened)"  strokeWidth={2} name="Opened"  dot={false} />
-                        <Area type="monotone" dataKey="clicked" stroke="#a855f7" fill="url(#gClicked)" strokeWidth={2} name="Clicked" dot={false} />
-                      </AreaChart>
+                        {DATASETS.filter(d => dailyDS.has(d.key) && !['bounced','failed'].includes(d.key)).map(d => (
+                          <Bar key={d.key} dataKey={d.key} fill={d.color} name={d.label} radius={[3,3,0,0]} />
+                        ))}
+                        {dailyDS.has('bounced') && <Bar dataKey="bounced" fill="#ef4444" name="Bounced" radius={[3,3,0,0]} />}
+                        {dailyDS.has('failed')  && <Bar dataKey="failed"  fill="#f97316" name="Failed"  radius={[3,3,0,0]} />}
+                      </BarChart>
                     </ResponsiveContainer>
                   )}
                 </div>
 
-                {/* Engagement line + bounce bar */}
+                {/* Engagement line + Bounce bar */}
                 <div className="grid grid-cols-1 xl:grid-cols-2 gap-6">
                   <div className="card p-5">
-                    <h2 className="font-semibold themed-secondary mb-4">Engagement Trend</h2>
+                    <div className="flex items-center justify-between mb-4 gap-3 flex-wrap">
+                      <h2 className="font-semibold themed-secondary">Engagement Trend</h2>
+                      <div className="flex gap-2">
+                        {[{ key: 'opened' as DatasetKey, label: 'Opens', color: '#10b981' }, { key: 'clicked' as DatasetKey, label: 'Clicks', color: '#6366f1' }].map(d => (
+                          <button key={d.key} onClick={() => toggleDS(dailyDS, d.key, setDailyDS)} className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-medium border transition-all" style={{ borderColor: dailyDS.has(d.key) ? d.color : 'var(--input-border)', background: dailyDS.has(d.key) ? `${d.color}18` : 'transparent', color: dailyDS.has(d.key) ? d.color : 'var(--text-muted)' }}>
+                            <span className="w-1.5 h-1.5 rounded-full" style={{ background: dailyDS.has(d.key) ? d.color : 'var(--input-border)' }} />
+                            {d.label}
+                          </button>
+                        ))}
+                      </div>
+                    </div>
                     {daily.length === 0 ? (
                       <div className="h-44 flex items-center justify-center text-sm themed-muted">No data</div>
                     ) : (
@@ -309,14 +407,20 @@ export default function ReportsPage() {
                           <YAxis tick={{ fontSize: 11, fill: 'var(--text-muted)' }} />
                           <Tooltip content={<ChartTooltip />} />
                           <Legend iconType="circle" iconSize={8} />
-                          <Line type="monotone" dataKey="opened"  stroke="#10b981" strokeWidth={2} dot={false} name="Opens"   />
-                          <Line type="monotone" dataKey="clicked" stroke="#6366f1" strokeWidth={2} dot={false} name="Clicks"  />
+                          {dailyDS.has('opened')  && <Line type="monotone" dataKey="opened"  stroke="#10b981" strokeWidth={2} dot={false} name="Opens"  />}
+                          {dailyDS.has('clicked') && <Line type="monotone" dataKey="clicked" stroke="#6366f1" strokeWidth={2} dot={false} name="Clicks" />}
                         </LineChart>
                       </ResponsiveContainer>
                     )}
                   </div>
                   <div className="card p-5">
-                    <h2 className="font-semibold themed-secondary mb-4">Bounces &amp; Failures</h2>
+                    <div className="flex items-center justify-between mb-4 gap-3 flex-wrap">
+                      <h2 className="font-semibold themed-secondary">Bounces &amp; Failures</h2>
+                      <DatasetToggles
+                        active={bounceDS}
+                        onChange={k => toggleDS(bounceDS, k, setBounceDS)}
+                      />
+                    </div>
                     {daily.length === 0 ? (
                       <div className="h-44 flex items-center justify-center text-sm themed-muted">No data</div>
                     ) : (
@@ -327,8 +431,8 @@ export default function ReportsPage() {
                           <YAxis tick={{ fontSize: 11, fill: 'var(--text-muted)' }} />
                           <Tooltip content={<ChartTooltip />} />
                           <Legend iconType="circle" iconSize={8} />
-                          <Bar dataKey="bounced" fill="#ef4444" name="Bounced" radius={[3,3,0,0]} />
-                          <Bar dataKey="failed"  fill="#f97316" name="Failed"  radius={[3,3,0,0]} />
+                          {bounceDS.has('bounced') && <Bar dataKey="bounced" fill="#ef4444" name="Bounced" radius={[3,3,0,0]} />}
+                          {bounceDS.has('failed')  && <Bar dataKey="failed"  fill="#f97316" name="Failed"  radius={[3,3,0,0]} />}
                         </BarChart>
                       </ResponsiveContainer>
                     )}
@@ -344,9 +448,15 @@ export default function ReportsPage() {
                   <div className="card py-20 text-center themed-muted text-sm">No monthly data for this period</div>
                 ) : (
                   <>
-                    {/* Monthly overview bar */}
+                    {/* Monthly volume — grouped Bar chart with toggles */}
                     <div className="card p-5 mb-6">
-                      <h2 className="font-semibold themed-secondary mb-4">Monthly Email Volume</h2>
+                      <div className="flex items-center justify-between mb-4 gap-3 flex-wrap">
+                        <h2 className="font-semibold themed-secondary">Monthly Email Volume</h2>
+                        <DatasetToggles
+                          active={monthlyDS}
+                          onChange={k => toggleDS(monthlyDS, k, setMonthlyDS)}
+                        />
+                      </div>
                       <ResponsiveContainer width="100%" height={260}>
                         <BarChart data={monthly} margin={{ top: 5, right: 10, left: -15, bottom: 0 }}>
                           <CartesianGrid strokeDasharray="3 3" stroke="var(--card-border)" />
@@ -354,14 +464,14 @@ export default function ReportsPage() {
                           <YAxis tick={{ fontSize: 11, fill: 'var(--text-muted)' }} />
                           <Tooltip content={<ChartTooltip />} labelFormatter={fmtMonth} />
                           <Legend iconType="circle" iconSize={8} />
-                          <Bar dataKey="sent"    fill="#14b8a6" name="Sent"    radius={[3,3,0,0]} />
-                          <Bar dataKey="opened"  fill="#6366f1" name="Opened"  radius={[3,3,0,0]} />
-                          <Bar dataKey="clicked" fill="#a855f7" name="Clicked" radius={[3,3,0,0]} />
+                          {DATASETS.filter(d => monthlyDS.has(d.key)).map(d => (
+                            <Bar key={d.key} dataKey={d.key} fill={d.color} name={d.label} radius={[3,3,0,0]} />
+                          ))}
                         </BarChart>
                       </ResponsiveContainer>
                     </div>
 
-                    {/* Monthly line trends */}
+                    {/* Monthly engagement rate line + bounce bar */}
                     <div className="grid grid-cols-1 xl:grid-cols-2 gap-6 mb-6">
                       <div className="card p-5">
                         <h2 className="font-semibold themed-secondary mb-4">Monthly Engagement Rate</h2>
@@ -389,19 +499,15 @@ export default function ReportsPage() {
                       <div className="card p-5">
                         <h2 className="font-semibold themed-secondary mb-4">Monthly Bounces &amp; Failures</h2>
                         <ResponsiveContainer width="100%" height={200}>
-                          <AreaChart data={monthly} margin={{ top: 5, right: 10, left: -15, bottom: 0 }}>
-                            <defs>
-                              <linearGradient id="gBounce" x1="0" y1="0" x2="0" y2="1"><stop offset="5%" stopColor="#ef4444" stopOpacity={0.3}/><stop offset="95%" stopColor="#ef4444" stopOpacity={0}/></linearGradient>
-                              <linearGradient id="gFailed" x1="0" y1="0" x2="0" y2="1"><stop offset="5%" stopColor="#f97316" stopOpacity={0.3}/><stop offset="95%" stopColor="#f97316" stopOpacity={0}/></linearGradient>
-                            </defs>
+                          <BarChart data={monthly} margin={{ top: 5, right: 10, left: -15, bottom: 0 }}>
                             <CartesianGrid strokeDasharray="3 3" stroke="var(--card-border)" />
                             <XAxis dataKey="month" tick={{ fontSize: 11, fill: 'var(--text-muted)' }} tickFormatter={fmtMonth} />
                             <YAxis tick={{ fontSize: 11, fill: 'var(--text-muted)' }} />
                             <Tooltip content={<ChartTooltip />} labelFormatter={fmtMonth} />
                             <Legend iconType="circle" iconSize={8} />
-                            <Area type="monotone" dataKey="bounced" stroke="#ef4444" fill="url(#gBounce)" strokeWidth={2} name="Bounced" dot={{ r: 3 }} />
-                            <Area type="monotone" dataKey="failed"  stroke="#f97316" fill="url(#gFailed)" strokeWidth={2} name="Failed"  dot={{ r: 3 }} />
-                          </AreaChart>
+                            <Bar dataKey="bounced" fill="#ef4444" name="Bounced" radius={[3,3,0,0]} />
+                            <Bar dataKey="failed"  fill="#f97316" name="Failed"  radius={[3,3,0,0]} />
+                          </BarChart>
                         </ResponsiveContainer>
                       </div>
                     </div>
@@ -438,7 +544,6 @@ export default function ReportsPage() {
                               </tr>
                             );
                           })}
-                          {/* Totals row */}
                           {totals && (
                             <tr style={{ borderTop: '2px solid var(--card-border)', background: 'var(--table-head-bg)' }}>
                               <td className="px-5 py-3 font-bold themed-heading">Total</td>
@@ -467,7 +572,6 @@ export default function ReportsPage() {
                   <div className="card py-20 text-center themed-muted text-sm">No email accounts found</div>
                 ) : (
                   <>
-                    {/* Account cards */}
                     <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-4 mb-6">
                       {accounts.map(a => {
                         const deliverPct = a.sent > 0 ? ((a.delivered / a.sent) * 100).toFixed(1) : '0';
@@ -483,9 +587,7 @@ export default function ReportsPage() {
                                 </div>
                                 <p className="text-xs themed-muted mt-0.5 ml-4">{a.email}</p>
                               </div>
-                              <span className="text-xs px-2 py-0.5 rounded-full font-medium capitalize" style={{ background: `${color}18`, color }}>
-                                {a.provider}
-                              </span>
+                              <span className="text-xs px-2 py-0.5 rounded-full font-medium capitalize" style={{ background: `${color}18`, color }}>{a.provider}</span>
                             </div>
                             <div className="grid grid-cols-3 gap-2 mb-3">
                               {[
@@ -502,7 +604,6 @@ export default function ReportsPage() {
                                 </div>
                               ))}
                             </div>
-                            {/* mini progress bars */}
                             <div className="space-y-1.5">
                               <div className="flex items-center gap-2 text-xs">
                                 <span className="w-16 themed-muted">Delivered</span>

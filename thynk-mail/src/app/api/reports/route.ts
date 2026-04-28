@@ -2,19 +2,49 @@ import { NextRequest, NextResponse } from 'next/server';
 import { createServerClient } from '@/lib/supabase';
 import { DEMO_TEAM } from '@/lib/constants';
 
+function getDateRange(rangeParam: string, from?: string, to?: string): { since: Date; until: Date } {
+  const now = new Date();
+  const until = to ? new Date(to + 'T23:59:59') : new Date();
+
+  if (rangeParam === 'custom' && from) {
+    return { since: new Date(from + 'T00:00:00'), until };
+  }
+
+  let since: Date;
+  switch (rangeParam) {
+    case 'today': {
+      since = new Date(now.getFullYear(), now.getMonth(), now.getDate(), 0, 0, 0);
+      break;
+    }
+    case 'week': {
+      // Monday to Sunday of current week
+      const day = now.getDay(); // 0=Sun
+      const diff = day === 0 ? -6 : 1 - day; // offset to Monday
+      since = new Date(now.getFullYear(), now.getMonth(), now.getDate() + diff, 0, 0, 0);
+      break;
+    }
+    case '15':  since = new Date(now); since.setDate(since.getDate() - 15);  break;
+    case '30':  since = new Date(now); since.setDate(since.getDate() - 30);  break;
+    case '90':  since = new Date(now); since.setDate(since.getDate() - 90);  break;
+    case '180': since = new Date(now); since.setDate(since.getDate() - 180); break;
+    case 'year':
+    default:
+      since = new Date(now.getFullYear(), 0, 1);
+      break;
+  }
+  return { since, until };
+}
+
 export async function GET(req: NextRequest) {
   const db = createServerClient();
   const { searchParams } = new URL(req.url);
   const rangeParam = searchParams.get('range') ?? 'year';
+  const fromDate   = searchParams.get('from') ?? undefined;
+  const toDate     = searchParams.get('to')   ?? undefined;
 
-  let since: Date;
-  if (rangeParam === 'year') {
-    since = new Date(new Date().getFullYear(), 0, 1);
-  } else {
-    since = new Date();
-    since.setDate(since.getDate() - parseInt(rangeParam, 10));
-  }
+  const { since, until } = getDateRange(rangeParam, fromDate, toDate);
   const sinceISO = since.toISOString();
+  const untilISO = until.toISOString();
 
   // Campaign-level stats
   const { data: campaigns } = await db
@@ -22,6 +52,7 @@ export async function GET(req: NextRequest) {
     .select('id,name,status,sent_count,open_count,click_count,bounce_count,unsubscribe_count,account_id,sent_at,created_at')
     .eq('team_id', DEMO_TEAM)
     .gte('created_at', sinceISO)
+    .lte('created_at', untilISO)
     .order('created_at', { ascending: false });
 
   const rows = campaigns ?? [];
@@ -46,6 +77,7 @@ export async function GET(req: NextRequest) {
     .from('send_logs')
     .select('sent_at, status')
     .gte('sent_at', sinceISO)
+    .lte('sent_at', untilISO)
     .not('sent_at', 'is', null);
 
   // Daily aggregation
@@ -63,7 +95,7 @@ export async function GET(req: NextRequest) {
     .sort(([a], [b]) => a.localeCompare(b))
     .map(([date, vals]) => ({ date, ...vals }));
 
-  // Monthly aggregation (group daily into YYYY-MM)
+  // Monthly aggregation
   const monthlyMap: Record<string, { month: string; sent: number; opened: number; clicked: number; bounced: number; failed: number }> = {};
   for (const d of daily) {
     const m = d.date.slice(0, 7);
@@ -76,11 +108,12 @@ export async function GET(req: NextRequest) {
   }
   const monthly = Object.values(monthlyMap).sort((a, b) => a.month.localeCompare(b.month));
 
-  // Account-wise stats: join send_logs with email_accounts
+  // Account-wise stats
   const { data: accountLogs } = await db
     .from('send_logs')
     .select('account_id, status')
     .gte('sent_at', sinceISO)
+    .lte('sent_at', untilISO)
     .not('account_id', 'is', null);
 
   const { data: accounts } = await db
@@ -101,10 +134,7 @@ export async function GET(req: NextRequest) {
   }
 
   const accountStats = (accounts ?? []).map(a => ({
-    id: a.id,
-    name: a.name,
-    email: a.email,
-    provider: a.provider,
+    id: a.id, name: a.name, email: a.email, provider: a.provider,
     ...(accountMap[a.id] ?? { sent: 0, delivered: 0, opened: 0, clicked: 0, bounced: 0, failed: 0 }),
   }));
 

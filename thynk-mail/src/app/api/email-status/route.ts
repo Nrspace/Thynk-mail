@@ -8,28 +8,11 @@ export async function GET(req: NextRequest) {
   const email = searchParams.get('email')?.trim().toLowerCase();
   const campaignId = searchParams.get('campaign_id');
   const status = searchParams.get('status');
+  const accountIdsParam = searchParams.get('account_ids');
+  const accountIds = accountIdsParam ? accountIdsParam.split(',').filter(Boolean) : [];
   const page = parseInt(searchParams.get('page') ?? '1', 10);
   const limit = 50;
   const offset = (page - 1) * limit;
-
-  if (!email && !campaignId && !status) {
-    return NextResponse.json({ logs: [], total: 0 });
-  }
-
-  // First find matching contacts by email
-  let contactIds: string[] = [];
-  if (email) {
-    const { data: contacts } = await db
-      .from('contacts')
-      .select('id, email, first_name, last_name')
-      .eq('team_id', DEMO_TEAM)
-      .ilike('email', `%${email}%`)
-      .limit(100);
-    contactIds = (contacts ?? []).map(c => c.id);
-    if (contactIds.length === 0) {
-      return NextResponse.json({ logs: [], total: 0 });
-    }
-  }
 
   // Build send_logs query
   let query = db
@@ -41,7 +24,36 @@ export async function GET(req: NextRequest) {
       account_id
     `, { count: 'exact' });
 
-  if (contactIds.length > 0) query = query.in('contact_id', contactIds);
+  // Filter by specific account IDs if provided
+  if (accountIds.length > 0) {
+    query = query.in('account_id', accountIds);
+  } else {
+    // Restrict to accounts belonging to this team
+    const { data: teamAccounts } = await db
+      .from('email_accounts')
+      .select('id')
+      .eq('team_id', DEMO_TEAM);
+    const teamAccountIds = (teamAccounts ?? []).map(a => a.id);
+    if (teamAccountIds.length > 0) {
+      query = query.in('account_id', teamAccountIds);
+    }
+  }
+
+  // Filter by email (search contacts first)
+  if (email) {
+    const { data: contacts } = await db
+      .from('contacts')
+      .select('id')
+      .eq('team_id', DEMO_TEAM)
+      .ilike('email', `%${email}%`)
+      .limit(100);
+    const contactIds = (contacts ?? []).map(c => c.id);
+    if (contactIds.length === 0) {
+      return NextResponse.json({ logs: [], total: 0 });
+    }
+    query = query.in('contact_id', contactIds);
+  }
+
   if (campaignId) query = query.eq('campaign_id', campaignId);
   if (status) query = query.eq('status', status);
 
@@ -61,7 +73,7 @@ export async function GET(req: NextRequest) {
   const [{ data: contacts }, { data: campaigns }, { data: accounts }] = await Promise.all([
     db.from('contacts').select('id, email, first_name, last_name').in('id', uniqueContactIds),
     db.from('campaigns').select('id, name, subject').in('id', uniqueCampaignIds),
-    db.from('email_accounts').select('id, name, email').in('id', uniqueAccountIds),
+    db.from('email_accounts').select('id, name, email, provider').in('id', uniqueAccountIds),
   ]);
 
   const contactMap = Object.fromEntries((contacts ?? []).map(c => [c.id, c]));
