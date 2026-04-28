@@ -37,6 +37,19 @@ export default function CampaignActions({ campaign }: { campaign: Campaign }) {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ campaign_id: campaign.id }),
       });
+
+      // Guard against non-JSON responses (e.g. Vercel 504 timeout returns an HTML error page)
+      const contentType = res.headers.get('content-type') ?? '';
+      if (!contentType.includes('application/json')) {
+        if (res.status === 504 || res.status === 502) {
+          alert('The server timed out while sending. The campaign may still be processing — check back in a few minutes before retrying.');
+        } else {
+          const text = await res.text();
+          alert(`Send failed (HTTP ${res.status}): ${text.slice(0, 300)}`);
+        }
+        return;
+      }
+
       const data = await res.json();
       if (data.error) alert(`Send error: ${data.error}`);
       else router.push(`/campaigns/${campaign.id}`);
