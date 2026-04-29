@@ -26,6 +26,7 @@ export default function CampaignForm({ mode, campaignId, initial }: Props) {
   const [sending, setSending] = useState(false);
   const [sent, setSent]       = useState(false);
   const [sendError, setSendError] = useState('');
+  const [sendProgress, setSendProgress] = useState<{ sent: number; failed: number; total: number; pct: number } | null>(null);
   const [accounts, setAccounts]   = useState<Account[]>([]);
   const [lists, setLists]         = useState<ContactList[]>([]);
   const [templates, setTemplates] = useState<Template[]>([]);
@@ -101,14 +102,14 @@ export default function CampaignForm({ mode, campaignId, initial }: Props) {
     } finally { setSaving(false); }
   };
 
-  // Send now — save first then trigger queue
+  // Send now — save first, then stream SSE progress from queue route
   const handleSendNow = async () => {
     const err = validate();
     if (err) { alert(err); return; }
     setSending(true);
     setSendError('');
+    setSendProgress(null);
     try {
-      // Step 1: Save/update campaign with status sending
       const url    = mode === 'edit' ? `/api/campaigns/${campaignId}` : '/api/campaigns';
       const method = mode === 'edit' ? 'PATCH' : 'POST';
       const saveRes = await fetch(url, {
@@ -118,22 +119,47 @@ export default function CampaignForm({ mode, campaignId, initial }: Props) {
       });
       const campaign = await saveRes.json();
       if (campaign.error) { setSendError(campaign.error); setSending(false); return; }
-
       const cid = campaign.id ?? campaignId;
 
-      // Step 2: Trigger send queue
+      // Read SSE stream — keeps gateway alive for large campaigns
       const sendRes = await fetch('/api/send/queue', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ campaign_id: cid }),
       });
-      const sendData = await sendRes.json();
+      if (!sendRes.ok || !sendRes.body) {
+        const text = await sendRes.text().catch(() => `HTTP ${sendRes.status}`);
+        setSendError(text.slice(0, 200));
+        setSending(false);
+        return;
+      }
 
-      if (sendData.error) {
-        setSendError(sendData.error);
-      } else {
-        setSent(true);
-        setTimeout(() => router.push(`/campaigns/${cid}`), 2000);
+      const reader = sendRes.body.getReader();
+      const dec = new TextDecoder();
+      let buf = '';
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        buf += dec.decode(value, { stream: true });
+        const parts = buf.split('\n\n');
+        buf = parts.pop() ?? '';
+        for (const part of parts) {
+          const evMatch   = part.match(/^event: (\w+)/m);
+          const dataMatch = part.match(/^data: (.+)$/m);
+          if (!evMatch || !dataMatch) continue;
+          let data: any;
+          try { data = JSON.parse(dataMatch[1]); } catch { continue; }
+          const ev = evMatch[1];
+          if (ev === 'progress') {
+            setSendProgress({ sent: data.sent, failed: data.failed, total: data.total, pct: data.pct });
+          } else if (ev === 'done') {
+            setSendProgress({ sent: data.sent, failed: data.failed, total: data.total, pct: 100 });
+            setSent(true);
+            setTimeout(() => router.push(`/campaigns/${cid}`), 2000);
+          } else if (ev === 'error') {
+            setSendError(data.error ?? 'Unknown error');
+          }
+        }
       }
     } catch (e: unknown) {
       setSendError(e instanceof Error ? e.message : 'Failed to send');
@@ -164,8 +190,24 @@ export default function CampaignForm({ mode, campaignId, initial }: Props) {
         <div className="mb-6 bg-green-50 border border-green-200 rounded-xl px-5 py-4 flex items-center gap-3">
           <CheckCircle size={20} className="text-green-600 shrink-0" />
           <div>
-            <p className="font-semibold text-green-800">Campaign is sending!</p>
-            <p className="text-sm text-green-600">Redirecting to campaign detail...</p>
+            <p className="font-semibold text-green-800">Campaign sent! Redirecting…</p>
+          </div>
+        </div>
+      )}
+
+      {/* Live send progress banner */}
+      {sendProgress && !sent && (
+        <div className="mb-6 border rounded-xl px-5 py-4" style={{ background: 'var(--card-bg)', borderColor: 'var(--card-border)' }}>
+          <div className="flex justify-between text-sm mb-2">
+            <span className="font-medium" style={{ color: 'var(--text-primary)' }}>
+              Sending… {sendProgress.sent}/{sendProgress.total}
+              {sendProgress.failed > 0 && <span className="text-red-500 ml-2">{sendProgress.failed} failed</span>}
+            </span>
+            <span className="font-mono font-semibold" style={{ color: 'var(--text-muted)' }}>{sendProgress.pct}%</span>
+          </div>
+          <div className="h-2 rounded-full overflow-hidden" style={{ background: 'var(--card-border)' }}>
+            <div className="h-full rounded-full transition-all duration-500"
+              style={{ width: `${sendProgress.pct}%`, background: 'linear-gradient(90deg,#14b8a6,#6366f1)' }} />
           </div>
         </div>
       )}

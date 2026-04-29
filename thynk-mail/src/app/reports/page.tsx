@@ -3,7 +3,9 @@ import { useState, useEffect, useCallback } from 'react';
 import {
   LineChart, Line,
   BarChart, Bar,
+  ComposedChart, Area,
   XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, Legend,
+  ReferenceLine, Brush,
   PieChart, Pie, Cell, RadialBarChart, RadialBar,
 } from 'recharts';
 import {
@@ -89,18 +91,38 @@ function Gauge({ value, label, color }: { value: number; label: string; color: s
   );
 }
 
-function ChartTooltip({ active, payload, label }: any) {
+function ChartTooltip({ active, payload, label, labelFormatter }: any) {
   if (!active || !payload?.length) return null;
+  const displayLabel = labelFormatter ? labelFormatter(label) : label;
+  const visiblePayload = payload.filter((p: any) => p.name && p.name !== '_area');
+  const total = visiblePayload.reduce((s: number, p: any) => s + (typeof p.value === 'number' ? p.value : 0), 0);
   return (
-    <div className="rounded-xl shadow-xl border px-3 py-2 text-xs" style={{ background: 'var(--card-bg)', borderColor: 'var(--card-border)' }}>
-      <p className="font-semibold mb-1" style={{ color: 'var(--text-primary)' }}>{label}</p>
-      {payload.map((p: any) => (
-        <div key={p.name} className="flex items-center gap-2">
-          <span className="w-2 h-2 rounded-full" style={{ background: p.color }} />
-          <span style={{ color: 'var(--text-muted)' }}>{p.name}:</span>
-          <span className="font-semibold" style={{ color: 'var(--text-primary)' }}>{p.value.toLocaleString()}</span>
+    <div className="rounded-xl shadow-2xl border px-4 py-3 text-xs min-w-[150px]"
+      style={{ background: 'var(--card-bg)', borderColor: 'var(--card-border)' }}>
+      {displayLabel && (
+        <p className="font-bold mb-2 pb-2 border-b text-sm" style={{ color: 'var(--text-primary)', borderColor: 'var(--card-border)' }}>
+          {displayLabel}
+        </p>
+      )}
+      {visiblePayload.map((p: any) => (
+        <div key={p.name} className="flex items-center justify-between gap-4 mb-1.5">
+          <div className="flex items-center gap-2">
+            <span className="w-2.5 h-2.5 rounded-sm flex-shrink-0"
+              style={{ background: p.fill && p.fill !== 'none' ? p.fill : (p.stroke ?? p.color) }} />
+            <span style={{ color: 'var(--text-muted)' }}>{p.name}</span>
+          </div>
+          <span className="font-bold tabular-nums"
+            style={{ color: p.fill && p.fill !== 'none' ? p.fill : (p.stroke ?? p.color) }}>
+            {typeof p.value === 'number' ? p.value.toLocaleString() : p.value}
+          </span>
         </div>
       ))}
+      {visiblePayload.length > 1 && total > 0 && (
+        <div className="mt-2 pt-2 border-t flex items-center justify-between" style={{ borderColor: 'var(--card-border)' }}>
+          <span style={{ color: 'var(--text-muted)' }}>Total</span>
+          <span className="font-bold" style={{ color: 'var(--text-primary)' }}>{total.toLocaleString()}</span>
+        </div>
+      )}
     </div>
   );
 }
@@ -400,43 +422,76 @@ export default function ReportsPage() {
                     </div>
                     {daily.length === 0 ? (
                       <div className="h-44 flex items-center justify-center text-sm themed-muted">No data</div>
-                    ) : (
-                      <ResponsiveContainer width="100%" height={180}>
-                        <LineChart data={daily} margin={{ top: 5, right: 10, left: -15, bottom: 0 }}>
-                          <CartesianGrid strokeDasharray="3 3" stroke="var(--card-border)" />
-                          <XAxis dataKey="date" tick={{ fontSize: 11, fill: 'var(--text-muted)' }} tickFormatter={d => d.slice(5)} />
-                          <YAxis tick={{ fontSize: 11, fill: 'var(--text-muted)' }} />
-                          <Tooltip content={<ChartTooltip />} />
-                          <Legend iconType="circle" iconSize={8} />
-                          {dailyDS.has('opened')  && <Line type="monotone" dataKey="opened"  stroke="#10b981" strokeWidth={2} dot={false} name="Opens"  />}
-                          {dailyDS.has('clicked') && <Line type="monotone" dataKey="clicked" stroke="#6366f1" strokeWidth={2} dot={false} name="Clicks" />}
-                        </LineChart>
-                      </ResponsiveContainer>
-                    )}
+                    ) : (() => {
+                      const avgOpened = daily.length > 0 ? +(daily.reduce((s,d)=>s+d.opened,0)/daily.length).toFixed(1) : 0;
+                      return (
+                        <ResponsiveContainer width="100%" height={210}>
+                          <ComposedChart data={daily} margin={{ top: 10, right: 10, left: -15, bottom: 0 }}>
+                            <defs>
+                              <linearGradient id="gOpen" x1="0" y1="0" x2="0" y2="1">
+                                <stop offset="5%"  stopColor="#10b981" stopOpacity={0.25}/>
+                                <stop offset="95%" stopColor="#10b981" stopOpacity={0.02}/>
+                              </linearGradient>
+                              <linearGradient id="gClick" x1="0" y1="0" x2="0" y2="1">
+                                <stop offset="5%"  stopColor="#6366f1" stopOpacity={0.2}/>
+                                <stop offset="95%" stopColor="#6366f1" stopOpacity={0.02}/>
+                              </linearGradient>
+                            </defs>
+                            <CartesianGrid strokeDasharray="3 3" stroke="var(--card-border)" vertical={false}/>
+                            <XAxis dataKey="date" tick={{fontSize:10,fill:'var(--text-muted)'}} tickFormatter={d=>d.slice(5)} axisLine={false} tickLine={false}/>
+                            <YAxis tick={{fontSize:10,fill:'var(--text-muted)'}} axisLine={false} tickLine={false}/>
+                            <Tooltip content={<ChartTooltip/>}/>
+                            <Legend iconType="circle" iconSize={8} wrapperStyle={{fontSize:11}}/>
+                            {avgOpened > 0 && <ReferenceLine y={avgOpened} stroke="#10b981" strokeDasharray="4 3" strokeOpacity={0.5} label={{value:`avg ${avgOpened}`,position:'right',fontSize:9,fill:'#10b981'}}/>}
+                            {dailyDS.has('opened')  && <Area type="monotone" dataKey="opened"  fill="url(#gOpen)"  stroke="none" name="_area" legendType="none"/>}
+                            {dailyDS.has('clicked') && <Area type="monotone" dataKey="clicked" fill="url(#gClick)" stroke="none" name="_area" legendType="none"/>}
+                            {dailyDS.has('opened')  && <Line type="monotone" dataKey="opened"  stroke="#10b981" strokeWidth={2.5} dot={false} activeDot={{r:5,strokeWidth:0}} name="Opens"/>}
+                            {dailyDS.has('clicked') && <Line type="monotone" dataKey="clicked" stroke="#6366f1" strokeWidth={2.5} dot={false} activeDot={{r:5,strokeWidth:0}} name="Clicks"/>}
+                            {daily.length > 14 && <Brush dataKey="date" height={18} stroke="var(--card-border)" fill="var(--card-bg)" tickFormatter={d=>d.slice(5)} travellerWidth={6} startIndex={Math.max(0,daily.length-14)}/>}
+                          </ComposedChart>
+                        </ResponsiveContainer>
+                      );
+                    })()}
                   </div>
                   <div className="card p-5">
-                    <div className="flex items-center justify-between mb-4 gap-3 flex-wrap">
-                      <h2 className="font-semibold themed-secondary">Bounces &amp; Failures</h2>
-                      <DatasetToggles
-                        active={bounceDS}
-                        onChange={k => toggleDS(bounceDS, k, setBounceDS)}
-                      />
+                    <div className="flex items-center justify-between mb-2 gap-3 flex-wrap">
+                      <div>
+                        <h2 className="font-semibold themed-secondary">Bounces &amp; Failures</h2>
+                        <p className="text-xs themed-muted mt-0.5">Daily delivery problems</p>
+                      </div>
+                      <DatasetToggles active={bounceDS} onChange={k => toggleDS(bounceDS, k, setBounceDS)}/>
                     </div>
                     {daily.length === 0 ? (
                       <div className="h-44 flex items-center justify-center text-sm themed-muted">No data</div>
-                    ) : (
-                      <ResponsiveContainer width="100%" height={180}>
-                        <BarChart data={daily} margin={{ top: 5, right: 10, left: -15, bottom: 0 }}>
-                          <CartesianGrid strokeDasharray="3 3" stroke="var(--card-border)" />
-                          <XAxis dataKey="date" tick={{ fontSize: 11, fill: 'var(--text-muted)' }} tickFormatter={d => d.slice(5)} />
-                          <YAxis tick={{ fontSize: 11, fill: 'var(--text-muted)' }} />
-                          <Tooltip content={<ChartTooltip />} />
-                          <Legend iconType="circle" iconSize={8} />
-                          {bounceDS.has('bounced') && <Bar dataKey="bounced" fill="#ef4444" name="Bounced" radius={[3,3,0,0]} maxBarSize={32} />}
-                          {bounceDS.has('failed')  && <Bar dataKey="failed"  fill="#f97316" name="Failed"  radius={[3,3,0,0]} maxBarSize={32} />}
-                        </BarChart>
-                      </ResponsiveContainer>
-                    )}
+                    ) : (() => {
+                      const totalB = daily.reduce((s,d)=>s+d.bounced,0);
+                      const totalF = daily.reduce((s,d)=>s+d.failed,0);
+                      return (
+                        <>
+                          <div className="flex gap-3 mb-3">
+                            {[{label:'Bounced',val:totalB,c:'#ef4444'},{label:'Failed',val:totalF,c:'#f97316'}].map(s=>(
+                              <div key={s.label} className="flex items-center gap-1.5 px-2.5 py-1 rounded-lg" style={{background:`${s.c}10`}}>
+                                <span className="w-2 h-2 rounded-full" style={{background:s.c}}/>
+                                <span className="text-xs font-bold tabular-nums" style={{color:s.c}}>{s.val.toLocaleString()}</span>
+                                <span className="text-xs themed-muted">{s.label}</span>
+                              </div>
+                            ))}
+                          </div>
+                          <ResponsiveContainer width="100%" height={180}>
+                            <ComposedChart data={daily} margin={{top:5,right:10,left:-15,bottom:0}}>
+                              <CartesianGrid strokeDasharray="3 3" stroke="var(--card-border)" vertical={false}/>
+                              <XAxis dataKey="date" tick={{fontSize:10,fill:'var(--text-muted)'}} tickFormatter={d=>d.slice(5)} axisLine={false} tickLine={false}/>
+                              <YAxis tick={{fontSize:10,fill:'var(--text-muted)'}} axisLine={false} tickLine={false}/>
+                              <Tooltip content={<ChartTooltip/>}/>
+                              <Legend iconType="circle" iconSize={8} wrapperStyle={{fontSize:11}}/>
+                              {bounceDS.has('bounced') && <Bar dataKey="bounced" fill="#ef4444" name="Bounced" radius={[3,3,0,0]} maxBarSize={28}/>}
+                              {bounceDS.has('failed')  && <Bar dataKey="failed"  fill="#f97316" name="Failed"  radius={[3,3,0,0]} maxBarSize={28}/>}
+                              {daily.length > 14 && <Brush dataKey="date" height={18} stroke="var(--card-border)" fill="var(--card-bg)" tickFormatter={d=>d.slice(5)} travellerWidth={6} startIndex={Math.max(0,daily.length-14)}/>}
+                            </ComposedChart>
+                          </ResponsiveContainer>
+                        </>
+                      );
+                    })()}
                   </div>
                 </div>
               </>
@@ -475,41 +530,75 @@ export default function ReportsPage() {
                     {/* Monthly engagement rate line + bounce bar */}
                     <div className="grid grid-cols-1 xl:grid-cols-2 gap-6 mb-6">
                       <div className="card p-5">
-                        <h2 className="font-semibold themed-secondary mb-4">Monthly Engagement Rate</h2>
-                        <ResponsiveContainer width="100%" height={200}>
-                          <LineChart
-                            data={monthly.map(m => ({
-                              ...m,
-                              openPct:   m.sent > 0 ? +((m.opened  / m.sent) * 100).toFixed(1) : 0,
-                              clickPct:  m.sent > 0 ? +((m.clicked / m.sent) * 100).toFixed(1) : 0,
-                              bouncePct: m.sent > 0 ? +((m.bounced / m.sent) * 100).toFixed(1) : 0,
-                            }))}
-                            margin={{ top: 5, right: 10, left: -15, bottom: 0 }}
-                          >
-                            <CartesianGrid strokeDasharray="3 3" stroke="var(--card-border)" />
-                            <XAxis dataKey="month" tick={{ fontSize: 11, fill: 'var(--text-muted)' }} tickFormatter={fmtMonth} />
-                            <YAxis tick={{ fontSize: 11, fill: 'var(--text-muted)' }} unit="%" />
-                            <Tooltip content={<ChartTooltip />} labelFormatter={fmtMonth} />
-                            <Legend iconType="circle" iconSize={8} />
-                            <Line type="monotone" dataKey="openPct"   stroke="#14b8a6" strokeWidth={2} dot={{ r: 4 }} name="Open %"   />
-                            <Line type="monotone" dataKey="clickPct"  stroke="#6366f1" strokeWidth={2} dot={{ r: 4 }} name="Click %"  />
-                            <Line type="monotone" dataKey="bouncePct" stroke="#ef4444" strokeWidth={2} dot={{ r: 4 }} name="Bounce %" />
-                          </LineChart>
-                        </ResponsiveContainer>
+                        <div className="mb-2">
+                          <h2 className="font-semibold themed-secondary">Monthly Engagement Rate</h2>
+                          <p className="text-xs themed-muted mt-0.5">Open/click/bounce % · dashed line = avg open rate</p>
+                        </div>
+                        {(() => {
+                          const rd = monthly.map(m => ({
+                            month: m.month,
+                            'Open %':   m.sent > 0 ? +((m.opened  / m.sent)*100).toFixed(1) : 0,
+                            'Click %':  m.sent > 0 ? +((m.clicked / m.sent)*100).toFixed(1) : 0,
+                            'Bounce %': m.sent > 0 ? +((m.bounced / m.sent)*100).toFixed(1) : 0,
+                          }));
+                          const avgOpen = rd.length > 0 ? +(rd.reduce((s,d)=>s+d['Open %'],0)/rd.length).toFixed(1) : 0;
+                          return (
+                            <ResponsiveContainer width="100%" height={220}>
+                              <ComposedChart data={rd} margin={{top:10,right:20,left:-10,bottom:0}}>
+                                <defs>
+                                  <linearGradient id="gOpenPct" x1="0" y1="0" x2="0" y2="1">
+                                    <stop offset="5%"  stopColor="#14b8a6" stopOpacity={0.25}/>
+                                    <stop offset="95%" stopColor="#14b8a6" stopOpacity={0.02}/>
+                                  </linearGradient>
+                                </defs>
+                                <CartesianGrid strokeDasharray="3 3" stroke="var(--card-border)" vertical={false}/>
+                                <XAxis dataKey="month" tick={{fontSize:10,fill:'var(--text-muted)'}} tickFormatter={fmtMonth} axisLine={false} tickLine={false}/>
+                                <YAxis tick={{fontSize:10,fill:'var(--text-muted)'}} unit="%" axisLine={false} tickLine={false} domain={[0,'auto']}/>
+                                <Tooltip content={<ChartTooltip labelFormatter={fmtMonth}/>} labelFormatter={fmtMonth}/>
+                                <Legend iconType="circle" iconSize={8} wrapperStyle={{fontSize:11}}/>
+                                {avgOpen > 0 && <ReferenceLine y={avgOpen} stroke="#14b8a6" strokeDasharray="5 3" strokeOpacity={0.55} label={{value:`avg ${avgOpen}%`,position:'insideTopRight',fontSize:9,fill:'#14b8a6'}}/>}
+                                <Area type="monotone" dataKey="Open %" fill="url(#gOpenPct)" stroke="none" legendType="none" name="_area"/>
+                                <Line type="monotone" dataKey="Open %"   stroke="#14b8a6" strokeWidth={2.5} dot={{r:4,fill:'#14b8a6',strokeWidth:0}} activeDot={{r:6}}/>
+                                <Line type="monotone" dataKey="Click %"  stroke="#6366f1" strokeWidth={2.5} dot={{r:4,fill:'#6366f1',strokeWidth:0}} activeDot={{r:6}} strokeDasharray="6 3"/>
+                                <Line type="monotone" dataKey="Bounce %" stroke="#ef4444" strokeWidth={2}   dot={{r:3,fill:'#ef4444',strokeWidth:0}} activeDot={{r:5}} strokeDasharray="3 3"/>
+                              </ComposedChart>
+                            </ResponsiveContainer>
+                          );
+                        })()}
                       </div>
                       <div className="card p-5">
-                        <h2 className="font-semibold themed-secondary mb-4">Monthly Bounces &amp; Failures</h2>
-                        <ResponsiveContainer width="100%" height={200}>
-                          <BarChart data={monthly} margin={{ top: 5, right: 10, left: -15, bottom: 0 }}>
-                            <CartesianGrid strokeDasharray="3 3" stroke="var(--card-border)" />
-                            <XAxis dataKey="month" tick={{ fontSize: 11, fill: 'var(--text-muted)' }} tickFormatter={fmtMonth} />
-                            <YAxis tick={{ fontSize: 11, fill: 'var(--text-muted)' }} />
-                            <Tooltip content={<ChartTooltip />} labelFormatter={fmtMonth} />
-                            <Legend iconType="circle" iconSize={8} />
-                            <Bar dataKey="bounced" fill="#ef4444" name="Bounced" radius={[3,3,0,0]} maxBarSize={32} />
-                            <Bar dataKey="failed"  fill="#f97316" name="Failed"  radius={[3,3,0,0]} maxBarSize={32} />
-                          </BarChart>
-                        </ResponsiveContainer>
+                        <div className="mb-2">
+                          <h2 className="font-semibold themed-secondary">Monthly Bounces &amp; Failures</h2>
+                          <p className="text-xs themed-muted mt-0.5">Delivery problems by month</p>
+                        </div>
+                        {(() => {
+                          const totalB = monthly.reduce((s,m)=>s+m.bounced,0);
+                          const totalF = monthly.reduce((s,m)=>s+m.failed,0);
+                          return (
+                            <>
+                              <div className="flex gap-3 mb-3">
+                                {[{label:'Total Bounced',val:totalB,c:'#ef4444'},{label:'Total Failed',val:totalF,c:'#f97316'}].map(s=>(
+                                  <div key={s.label} className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg" style={{background:`${s.c}10`}}>
+                                    <span className="w-2 h-2 rounded-full" style={{background:s.c}}/>
+                                    <span className="text-xs themed-muted">{s.label}:</span>
+                                    <span className="text-xs font-bold tabular-nums" style={{color:s.c}}>{s.val.toLocaleString()}</span>
+                                  </div>
+                                ))}
+                              </div>
+                              <ResponsiveContainer width="100%" height={185}>
+                                <ComposedChart data={monthly} margin={{top:5,right:10,left:-15,bottom:0}}>
+                                  <CartesianGrid strokeDasharray="3 3" stroke="var(--card-border)" vertical={false}/>
+                                  <XAxis dataKey="month" tick={{fontSize:10,fill:'var(--text-muted)'}} tickFormatter={fmtMonth} axisLine={false} tickLine={false}/>
+                                  <YAxis tick={{fontSize:10,fill:'var(--text-muted)'}} axisLine={false} tickLine={false}/>
+                                  <Tooltip content={<ChartTooltip labelFormatter={fmtMonth}/>} labelFormatter={fmtMonth}/>
+                                  <Legend iconType="circle" iconSize={8} wrapperStyle={{fontSize:11}}/>
+                                  <Bar dataKey="bounced" fill="#ef4444" name="Bounced" radius={[4,4,0,0]} maxBarSize={32}/>
+                                  <Bar dataKey="failed"  fill="#f97316" name="Failed"  radius={[4,4,0,0]} maxBarSize={32}/>
+                                </ComposedChart>
+                              </ResponsiveContainer>
+                            </>
+                          );
+                        })()}
                       </div>
                     </div>
 
@@ -629,20 +718,25 @@ export default function ReportsPage() {
                     {/* Account comparison chart */}
                     <div className="card p-5 mb-6">
                       <h2 className="font-semibold themed-secondary mb-4">Account Comparison — Sent vs Opened vs Clicked</h2>
-                      <ResponsiveContainer width="100%" height={240}>
-                        <BarChart
-                          data={accounts.map(a => ({ name: a.name.length > 12 ? a.name.slice(0,12)+'…' : a.name, sent: a.sent, opened: a.opened, clicked: a.clicked }))}
-                          margin={{ top: 5, right: 10, left: -15, bottom: 0 }}
+                      <ResponsiveContainer width="100%" height={Math.max(160, accounts.length * 52)}>
+                        <ComposedChart
+                          layout="vertical"
+                          data={accounts.map(a => ({
+                            name: a.name.length > 14 ? a.name.slice(0,14)+'…' : a.name,
+                            Sent: a.sent, Opened: a.opened, Clicked: a.clicked,
+                            openPct: a.sent > 0 ? +((a.opened/a.sent)*100).toFixed(1) : 0,
+                          }))}
+                          margin={{ top: 5, right: 40, left: 10, bottom: 0 }}
                         >
-                          <CartesianGrid strokeDasharray="3 3" stroke="var(--card-border)" />
-                          <XAxis dataKey="name" tick={{ fontSize: 11, fill: 'var(--text-muted)' }} />
-                          <YAxis tick={{ fontSize: 11, fill: 'var(--text-muted)' }} />
-                          <Tooltip content={<ChartTooltip />} />
-                          <Legend iconType="circle" iconSize={8} />
-                          <Bar dataKey="sent"    fill="#14b8a6" name="Sent"    radius={[3,3,0,0]} maxBarSize={32} />
-                          <Bar dataKey="opened"  fill="#10b981" name="Opened"  radius={[3,3,0,0]} maxBarSize={32} />
-                          <Bar dataKey="clicked" fill="#a855f7" name="Clicked" radius={[3,3,0,0]} maxBarSize={32} />
-                        </BarChart>
+                          <CartesianGrid strokeDasharray="3 3" stroke="var(--card-border)" horizontal={false}/>
+                          <XAxis type="number" tick={{fontSize:10,fill:'var(--text-muted)'}} axisLine={false} tickLine={false}/>
+                          <YAxis type="category" dataKey="name" tick={{fontSize:11,fill:'var(--text-muted)'}} axisLine={false} tickLine={false} width={90}/>
+                          <Tooltip content={<ChartTooltip/>}/>
+                          <Legend iconType="circle" iconSize={8} wrapperStyle={{fontSize:11}}/>
+                          <Bar dataKey="Sent"    fill="#14b8a6" name="Sent"    radius={[0,4,4,0]} maxBarSize={20}/>
+                          <Bar dataKey="Opened"  fill="#6366f1" name="Opened"  radius={[0,4,4,0]} maxBarSize={20}/>
+                          <Bar dataKey="Clicked" fill="#a855f7" name="Clicked" radius={[0,4,4,0]} maxBarSize={20}/>
+                        </ComposedChart>
                       </ResponsiveContainer>
                     </div>
 
