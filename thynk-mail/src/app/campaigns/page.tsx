@@ -1,6 +1,6 @@
 import { createServerClient } from '@/lib/supabase';
 import Link from 'next/link';
-import { Send, Plus } from 'lucide-react';
+import { Send, Plus, Calendar } from 'lucide-react';
 import { DEMO_TEAM } from '@/lib/constants';
 import CampaignActions from '@/components/campaigns/CampaignActions';
 
@@ -31,7 +31,7 @@ export default async function CampaignsPage() {
 
   const rows = data ?? [];
 
-  // Fetch send_logs counts to match Reports page (avoids discrepancy with cached sent_count)
+  // Fetch send_logs counts
   const campaignIds = rows.map((c: any) => c.id);
   const logCountMap: Record<string, { sent: number; opened: number; clicked: number; bounced: number }> = {};
   if (campaignIds.length > 0) {
@@ -50,20 +50,68 @@ export default async function CampaignsPage() {
     }
   }
 
+  // Separate scheduled campaigns
+  const scheduledRows = rows.filter((c: any) => c.status === 'scheduled');
+  const otherRows = rows.filter((c: any) => c.status !== 'scheduled');
+
   return (
     <div className="p-8">
       <div className="flex items-center justify-between mb-8">
         <div>
           <h1 className="text-2xl font-semibold">Campaigns</h1>
-          <p className="text-sm text-gray-500 mt-1">{rows.length} total</p>
+          <p className="text-sm text-gray-500 mt-1">{rows.length} total
+            {scheduledRows.length > 0 && (
+              <span className="ml-2 inline-flex items-center gap-1 text-amber-600 font-medium">
+                · <Calendar size={12} /> {scheduledRows.length} scheduled
+              </span>
+            )}
+          </p>
         </div>
         <Link href="/campaigns/new" className="btn-primary">
           <Plus size={15} /> New Campaign
         </Link>
       </div>
 
+      {/* Scheduled campaigns banner */}
+      {scheduledRows.length > 0 && (
+        <div className="mb-6 rounded-xl border border-amber-200 bg-amber-50 overflow-hidden">
+          <div className="px-5 py-3 flex items-center gap-2 border-b border-amber-100">
+            <Calendar size={15} className="text-amber-600" />
+            <span className="text-sm font-semibold text-amber-800">Scheduled Campaigns</span>
+            <span className="ml-auto text-xs text-amber-600">{scheduledRows.length} pending</span>
+          </div>
+          <table className="w-full text-sm">
+            <tbody className="divide-y divide-amber-100">
+              {scheduledRows.map((c: any) => (
+                <tr key={c.id} className="hover:bg-amber-100/40 transition-colors">
+                  <td className="px-5 py-3">
+                    <Link href={`/campaigns/${c.id}`}
+                      className="font-medium text-gray-900 hover:text-teal-600">
+                      {c.name}
+                    </Link>
+                    <p className="text-xs text-gray-400 mt-0.5 truncate max-w-xs">{c.subject}</p>
+                  </td>
+                  <td className="px-4 py-3">
+                    <span className="badge-yellow">scheduled</span>
+                  </td>
+                  <td className="px-4 py-3 text-xs text-amber-700 flex items-center gap-1">
+                    <Calendar size={11} />
+                    {c.scheduled_at
+                      ? new Date(c.scheduled_at).toLocaleString()
+                      : 'Time not set'}
+                  </td>
+                  <td className="px-4 py-3">
+                    <CampaignActions campaign={c} />
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+
       <div className="card overflow-hidden">
-        {rows.length === 0 ? (
+        {otherRows.length === 0 && scheduledRows.length === 0 ? (
           <div className="py-20 text-center text-gray-400">
             <Send size={36} className="mx-auto mb-3 opacity-25" />
             <p className="font-medium">No campaigns yet</p>
@@ -71,6 +119,10 @@ export default async function CampaignsPage() {
             <Link href="/campaigns/new" className="btn-primary mt-5 inline-flex">
               <Plus size={14} /> Create Campaign
             </Link>
+          </div>
+        ) : otherRows.length === 0 ? (
+          <div className="py-12 text-center text-gray-400 text-sm">
+            All campaigns are scheduled
           </div>
         ) : (
           <table className="w-full text-sm">
@@ -87,7 +139,7 @@ export default async function CampaignsPage() {
               </tr>
             </thead>
             <tbody className="divide-y divide-gray-50">
-              {rows.map((c) => {
+              {otherRows.map((c: any) => {
                 const lc = logCountMap[c.id] ?? { sent: 0, opened: 0, clicked: 0, bounced: 0 };
                 const openRate = lc.sent > 0
                   ? ((lc.opened / lc.sent) * 100).toFixed(1) : '—';
