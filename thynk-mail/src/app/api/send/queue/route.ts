@@ -116,6 +116,20 @@ export async function POST(req: NextRequest) {
 
       await db.from('campaigns').update({ total_recipients: eligible.length }).eq('id', campaign_id);
 
+      // ── Auto-reset sent_today if it's a new UTC day ─────────────────────
+      // The schema has last_reset_date for exactly this purpose.
+      // Without this check, yesterday's count blocks all sends today.
+      const todayUTC = new Date().toISOString().slice(0, 10); // 'YYYY-MM-DD'
+      const lastReset = account.last_reset_date ?? '';        // e.g. '2026-04-28'
+      if (lastReset < todayUTC) {
+        await db.from('email_accounts')
+          .update({ sent_today: 0, last_reset_date: todayUTC })
+          .eq('id', account.id);
+        account.sent_today = 0;
+        account.last_reset_date = todayUTC;
+        emit('status', { status: 'sending', message: 'Daily counter reset for new day' });
+      }
+
       // ── Send loop ────────────────────────────────────────────────────────
       let sentCount = 0;
       let failCount = 0;

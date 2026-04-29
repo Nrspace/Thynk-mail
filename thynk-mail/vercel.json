@@ -4,5 +4,11 @@
     "src/app/api/send/queue/route.ts": {
       "maxDuration": 300
     }
-  }
+  },
+  "crons": [
+    {
+      "path": "/api/cron/reset-daily",
+      "schedule": "0 0 * * *"
+    }
+  ]
 }

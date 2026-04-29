@@ -1,13 +1,13 @@
 'use client';
 import { useState, useEffect } from 'react';
-import { Mail, Plus, Trash2, CheckCircle, XCircle, Loader2, ExternalLink, Info } from 'lucide-react';
+import { Mail, Plus, Trash2, CheckCircle, XCircle, Loader2, ExternalLink, Info, RotateCcw } from 'lucide-react';
 
 type Provider = 'gmail' | 'zoho' | 'outlook' | 'brevo' | 'smtp';
 
 interface Account {
   id: string; name: string; email: string; provider: Provider;
   smtp_host?: string; smtp_port?: number; smtp_user?: string;
-  daily_limit: number; sent_today: number; is_active: boolean; created_at: string;
+  daily_limit: number; sent_today: number; last_reset_date?: string; is_active: boolean; created_at: string;
 }
 
 const PROVIDER_META: Record<Provider, { label: string; badge: string; host: string; port: number; limitDefault: number; color: string }> = {
@@ -86,6 +86,7 @@ export default function AccountsPage() {
   const [form, setForm] = useState(DEFAULT_FORM);
   const [saving, setSaving] = useState(false);
   const [testing, setTesting] = useState<string | null>(null);
+  const [resetting, setResetting] = useState<string | null>(null);
   const [testResults, setTestResults] = useState<Record<string, { ok: boolean; error?: string }>>({});
   const [showTip, setShowTip] = useState(true);
 
@@ -139,6 +140,18 @@ export default function AccountsPage() {
     if (!confirm('Delete this account?')) return;
     await fetch(`/api/accounts/${id}`, { method: 'DELETE' });
     load();
+  }
+
+  async function handleReset(id: string) {
+    setResetting(id);
+    const todayUTC = new Date().toISOString().slice(0, 10);
+    await fetch(`/api/accounts/${id}`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ sent_today: 0, last_reset_date: todayUTC }),
+    });
+    load();
+    setResetting(null);
   }
 
   async function handleTest(id: string) {
@@ -396,18 +409,38 @@ export default function AccountsPage() {
 
                   <div className="flex items-center gap-5 shrink-0">
                     {/* Daily usage bar */}
-                    <div className="hidden md:block w-44">
-                      <div className="flex justify-between text-xs text-gray-400 mb-1">
-                        <span>Today</span>
-                        <span className="tabular-nums">{a.sent_today} / {a.daily_limit}</span>
-                      </div>
-                      <div className="h-1.5 bg-gray-100 rounded-full overflow-hidden">
-                        <div
-                          className={`h-full rounded-full transition-all duration-500 ${pct > 80 ? 'bg-red-500' : pct > 50 ? 'bg-amber-400' : 'bg-teal-500'}`}
-                          style={{ width: `${Math.min(pct, 100)}%` }}
-                        />
-                      </div>
-                    </div>
+                    {(() => {
+                      const todayUTC = new Date().toISOString().slice(0, 10);
+                      const isStale  = (a.last_reset_date ?? '') < todayUTC;
+                      const sentToday = isStale ? 0 : a.sent_today;
+                      const available = a.daily_limit - sentToday;
+                      const usedPct   = a.daily_limit > 0 ? Math.round((sentToday / a.daily_limit) * 100) : 0;
+                      return (
+                        <div className="hidden md:block w-52">
+                          <div className="flex justify-between text-xs mb-1">
+                            <span className="text-gray-400">Daily credits</span>
+                            <div className="flex items-center gap-1.5">
+                              {isStale && (
+                                <span className="text-amber-500 font-medium">needs reset</span>
+                              )}
+                              <span className="tabular-nums font-semibold" style={{ color: usedPct > 80 ? '#ef4444' : usedPct > 50 ? '#f59e0b' : '#10b981' }}>
+                                {available.toLocaleString()} / {a.daily_limit.toLocaleString()}
+                              </span>
+                            </div>
+                          </div>
+                          <div className="h-2 bg-gray-100 rounded-full overflow-hidden">
+                            <div
+                              className={`h-full rounded-full transition-all duration-500 ${usedPct > 80 ? 'bg-red-500' : usedPct > 50 ? 'bg-amber-400' : 'bg-teal-500'}`}
+                              style={{ width: `${Math.min(usedPct, 100)}%` }}
+                            />
+                          </div>
+                          <div className="flex justify-between text-xs mt-0.5 text-gray-400">
+                            <span>{sentToday.toLocaleString()} used</span>
+                            <span>{available.toLocaleString()} available</span>
+                          </div>
+                        </div>
+                      );
+                    })()}
 
                     <button
                       onClick={() => handleTest(a.id)}
@@ -416,7 +449,19 @@ export default function AccountsPage() {
                     >
                       {testing === a.id
                         ? <><Loader2 size={12} className="animate-spin" /> Testing...</>
-                        : 'Test connection'}
+                        : 'Test'}
+                    </button>
+
+                    <button
+                      onClick={() => handleReset(a.id)}
+                      disabled={resetting === a.id}
+                      title="Reset today's send counter (use when your provider's daily limit has refreshed)"
+                      className="btn-secondary text-xs py-1.5 px-3 flex items-center gap-1.5"
+                    >
+                      {resetting === a.id
+                        ? <Loader2 size={12} className="animate-spin" />
+                        : <RotateCcw size={12} />}
+                      Reset
                     </button>
 
                     <button onClick={() => handleDelete(a.id)}
