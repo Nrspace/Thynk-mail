@@ -8,7 +8,7 @@ export async function GET(_req: NextRequest, { params }: Params) {
   const db = createServerClient();
   const { data, error } = await db
     .from('email_accounts')
-    .select('id,name,email,provider,smtp_host,smtp_port,smtp_user,daily_limit,sent_today,is_active,created_at')
+    .select('id,name,email,provider,smtp_host,smtp_port,smtp_user,daily_limit,sent_today,last_reset_date,is_active,created_at')
     .eq('id', params.id)
     .single();
   if (error) return NextResponse.json({ error: error.message }, { status: 404 });

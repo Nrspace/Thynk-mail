@@ -4,7 +4,7 @@ import { useRouter } from 'next/navigation';
 import { ArrowLeft, Send, Save, Loader2, CheckCircle } from 'lucide-react';
 import Link from 'next/link';
 
-interface Account    { id: string; name: string; email: string; daily_limit: number; sent_today: number; }
+interface Account    { id: string; name: string; email: string; daily_limit: number; sent_today: number; last_reset_date?: string; }
 interface ContactList { id: string; name: string; contact_count: number; }
 interface Template   { id: string; name: string; subject: string; html_body: string; }
 
@@ -169,8 +169,12 @@ export default function CampaignForm({ mode, campaignId, initial }: Props) {
   };
 
   const selectedAccount = accounts.find(a => a.id === form.account_id);
-  const remainingToday  = selectedAccount
-    ? selectedAccount.daily_limit - selectedAccount.sent_today
+  // If last_reset_date < today (UTC), the counter is stale — treat sent_today as 0
+  const todayUTC = new Date().toISOString().slice(0, 10);
+  const effectiveSentToday = (acc: Account) =>
+    (acc.last_reset_date ?? '') < todayUTC ? 0 : acc.sent_today;
+  const remainingToday = selectedAccount
+    ? selectedAccount.daily_limit - effectiveSentToday(selectedAccount)
     : null;
 
   return (
@@ -264,8 +268,9 @@ export default function CampaignForm({ mode, campaignId, initial }: Props) {
             <>
               <div className="space-y-2">
                 {accounts.map(a => {
-                  const pct = a.daily_limit > 0 ? Math.round((a.sent_today / a.daily_limit) * 100) : 0;
-                  const remaining = a.daily_limit - a.sent_today;
+                  const sentEff   = effectiveSentToday(a);
+                  const pct       = a.daily_limit > 0 ? Math.round((sentEff / a.daily_limit) * 100) : 0;
+                  const remaining = a.daily_limit - sentEff;
                   return (
                     <label key={a.id}
                       className={`flex items-center gap-3 p-3 rounded-lg border cursor-pointer transition-colors ${form.account_id === a.id ? 'border-teal-500 bg-teal-50' : 'border-gray-200 hover:border-gray-300'}`}>
