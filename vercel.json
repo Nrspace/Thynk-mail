@@ -1,0 +1,13 @@
+{
+  "framework": "nextjs",
+  "crons": [
+    {
+      "path": "/api/cron/reset-daily",
+      "schedule": "0 0 * * *"
+    },
+    {
+      "path": "/api/cron/send-scheduled",
+      "schedule": "0 * * * *"
+    }
+  ]
+}
