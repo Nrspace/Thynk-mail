@@ -74,12 +74,20 @@ export default function CampaignForm({ mode, campaignId, initial }: Props) {
   }
 
   // Sanitize — convert empty strings to null for nullable fields
+  // IMPORTANT: datetime-local gives "2026-04-30T09:43" with NO timezone.
+  // Convert to UTC ISO string so Postgres/cron comparison is correct.
+  // new Date(localStr).toISOString() interprets the string in the browser
+  // local timezone and converts to UTC automatically.
   function sanitizeForm(f: CampaignFormData) {
+    let scheduled_at: string | null = null;
+    if (f.scheduled_at) {
+      try { scheduled_at = new Date(f.scheduled_at).toISOString(); } catch { scheduled_at = null; }
+    }
     return {
       ...f,
-      scheduled_at: f.scheduled_at || null,
-      reply_to:     f.reply_to     || null,
-      template_id:  f.template_id  || null,
+      scheduled_at,
+      reply_to:    f.reply_to    || null,
+      template_id: f.template_id || null,
     };
   }
 
@@ -363,10 +371,20 @@ export default function CampaignForm({ mode, campaignId, initial }: Props) {
         {/* Schedule */}
         <div className="card p-6 space-y-3">
           <h2 className="font-semibold text-gray-800">Schedule (optional)</h2>
-          <p className="text-xs text-gray-500">Leave empty to send immediately.</p>
-          <input type="datetime-local" className="input max-w-xs"
-            value={form.scheduled_at}
-            onChange={e => set('scheduled_at', e.target.value)} />
+          <p className="text-xs text-gray-500">
+            Leave empty to send immediately. Scheduled campaigns auto-fire within 5 minutes of the selected time.
+          </p>
+          <div>
+            <input type="datetime-local" className="input max-w-xs"
+              value={form.scheduled_at}
+              onChange={e => set('scheduled_at', e.target.value)} />
+            {form.scheduled_at && (
+              <p className="text-xs text-teal-600 mt-1.5 font-medium">
+                ⏰ Will send at {new Date(form.scheduled_at).toLocaleString()} (your local time ·{' '}
+                {Intl.DateTimeFormat().resolvedOptions().timeZone})
+              </p>
+            )}
+          </div>
         </div>
 
         {/* Action buttons */}

@@ -3,12 +3,19 @@
   "functions": {
     "src/app/api/send/queue/route.ts": {
       "maxDuration": 300
+    },
+    "src/app/api/cron/send-scheduled/route.ts": {
+      "maxDuration": 60
     }
   },
   "crons": [
     {
       "path": "/api/cron/reset-daily",
       "schedule": "0 0 * * *"
+    },
+    {
+      "path": "/api/cron/send-scheduled",
+      "schedule": "*/5 * * * *"
     }
   ]
 }
