@@ -11,6 +11,7 @@ import {
 import {
   BarChart3, Send, Eye, MousePointer, AlertCircle, UserMinus,
   TrendingUp, TrendingDown, Mail, Activity, ChevronDown, Calendar,
+  RefreshCw, Zap, CheckCircle,
 } from 'lucide-react';
 
 /* ─── Types ─── */
@@ -164,6 +165,8 @@ export default function ReportsPage() {
   const [accounts, setAccounts]   = useState<AccountStat[]>([]);
   const [campaigns, setCampaigns] = useState<CampaignRow[]>([]);
   const [loading, setLoading]     = useState(true);
+  const [syncing, setSyncing]     = useState(false);
+  const [syncMsg, setSyncMsg]     = useState<string | null>(null);
 
   // Per-chart dataset visibility
   const [dailyDS,   setDailyDS]   = useState<Set<DatasetKey>>(new Set(['sent','opened','clicked']));
@@ -197,6 +200,27 @@ export default function ReportsPage() {
   }, [range]);
 
   const selectedLabel = RANGE_OPTIONS.find(o => o.value === range)?.label ?? 'Current Year';
+
+  async function handleSync() {
+    setSyncing(true);
+    setSyncMsg(null);
+    try {
+      const r = await fetch('/api/sync/brevo', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ days_back: 7 }),
+      }).then(r => r.json());
+      if (r.ok) {
+        setSyncMsg(`✓ Synced ${r.synced} updates from Brevo`);
+        load(); // refresh charts
+      } else {
+        setSyncMsg(r.message ?? 'No Brevo accounts with API key found');
+      }
+    } finally {
+      setSyncing(false);
+      setTimeout(() => setSyncMsg(null), 6000);
+    }
+  }
 
   const funnelData = totals ? [
     { name: 'Sent',    value: totals.sent,    fill: '#14b8a6' },
@@ -248,6 +272,25 @@ export default function ReportsPage() {
                 </select>
                 <ChevronDown size={14} className="absolute right-2.5 top-1/2 -translate-y-1/2 pointer-events-none" style={{ color: 'var(--text-muted)' }}/>
               </div>
+            </div>
+
+            {/* Brevo sync button */}
+            <div className="flex items-center gap-2">
+              <button
+                onClick={handleSync}
+                disabled={syncing}
+                className="btn-secondary text-xs flex items-center gap-1.5 py-1.5 px-3"
+                title="Pull real delivery/open/bounce data from Brevo API"
+              >
+                {syncing ? <><span className="w-3 h-3 border-2 border-current border-t-transparent rounded-full animate-spin inline-block" /> Syncing...</>
+                  : <><RefreshCw size={12} /> Sync Brevo Stats</>}
+              </button>
+              {syncMsg && (
+                <span className={`text-xs flex items-center gap-1 ${syncMsg.startsWith('✓') ? 'text-green-600' : 'text-amber-600'}`}>
+                  {syncMsg.startsWith('✓') && <CheckCircle size={11} />}
+                  {syncMsg}
+                </span>
+              )}
             </div>
 
             {/* Custom date picker */}

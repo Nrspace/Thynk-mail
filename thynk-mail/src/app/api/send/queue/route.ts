@@ -4,6 +4,8 @@ import { sendEmail } from '@/lib/smtp-router';
 import { buildFinalHtml } from '@/lib/template-renderer';
 import type { EmailAccount, Contact } from '@/types';
 
+export const maxDuration = 300; // App Router: 300s. Vercel Hobby plan is capped at 60s.
+
 const RATE_DELAY_MS = 1200;
 const sleep = (ms: number) => new Promise(r => setTimeout(r, ms));
 

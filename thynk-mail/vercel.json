@@ -1,13 +1,5 @@
 {
   "framework": "nextjs",
-  "functions": {
-    "src/app/api/send/queue/route.ts": {
-      "maxDuration": 300
-    },
-    "src/app/api/cron/send-scheduled/route.ts": {
-      "maxDuration": 60
-    }
-  },
   "crons": [
     {
       "path": "/api/cron/reset-daily",
@@ -15,7 +7,7 @@
     },
     {
       "path": "/api/cron/send-scheduled",
-      "schedule": "*/5 * * * *"
+      "schedule": "0 * * * *"
     }
   ]
 }

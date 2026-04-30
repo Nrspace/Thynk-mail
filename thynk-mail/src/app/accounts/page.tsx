@@ -1,13 +1,14 @@
 'use client';
 import { useState, useEffect } from 'react';
-import { Mail, Plus, Trash2, CheckCircle, XCircle, Loader2, ExternalLink, Info, RotateCcw } from 'lucide-react';
+import { Mail, Plus, Trash2, CheckCircle, XCircle, Loader2, ExternalLink, Info, RotateCcw, RefreshCw, Key, Zap } from 'lucide-react';
 
 type Provider = 'gmail' | 'zoho' | 'outlook' | 'brevo' | 'smtp';
 
 interface Account {
   id: string; name: string; email: string; provider: Provider;
   smtp_host?: string; smtp_port?: number; smtp_user?: string;
-  daily_limit: number; sent_today: number; last_reset_date?: string; is_active: boolean; created_at: string;
+  daily_limit: number; sent_today: number; last_reset_date?: string;
+  is_active: boolean; created_at: string; has_api_key?: boolean;
 }
 
 const PROVIDER_META: Record<Provider, { label: string; badge: string; host: string; port: number; limitDefault: number; color: string }> = {
@@ -15,7 +16,7 @@ const PROVIDER_META: Record<Provider, { label: string; badge: string; host: stri
   gmail:   { label: 'Gmail',          badge: 'badge-red',    host: 'smtp.gmail.com',         port: 587, limitDefault: 500,  color: '#EA4335' },
   zoho:    { label: 'Zoho Mail',      badge: 'badge-blue',   host: '',                       port: 587, limitDefault: 200,  color: '#1A73E8' },
   outlook: { label: 'Outlook / 365',  badge: 'badge-blue',   host: 'smtp.office365.com',     port: 587, limitDefault: 300,  color: '#0078D4' },
-  smtp:    { label: 'Custom SMTP',    badge: 'badge-gray',   host: '',                        port: 587, limitDefault: 500,  color: '#64748b' },
+  smtp:    { label: 'Custom SMTP',    badge: 'badge-gray',   host: '',                       port: 587, limitDefault: 500,  color: '#64748b' },
 };
 
 const PROVIDER_TIPS: Record<Provider, { steps: string[]; docsUrl: string; warning?: string }> = {
@@ -27,6 +28,7 @@ const PROVIDER_TIPS: Record<Provider, { steps: string[]; docsUrl: string; warnin
       'Click "Generate a new SMTP key" and copy it',
       'Also copy the "Login" value — it looks like abc123@smtp-brevo.com',
       'Paste Login → SMTP Username below, SMTP Key → SMTP Password',
+      'For real-time stats (opens/bounces): copy your API key from Account → SMTP & API → API Keys tab',
       'Add & verify your sending domain under Senders & IPs → Domains',
     ],
   },
@@ -46,11 +48,7 @@ const PROVIDER_TIPS: Record<Provider, { steps: string[]; docsUrl: string; warnin
     steps: [
       'Go to Zoho Mail → Settings → Security → App Passwords',
       'Click "Generate New Password", name it "MailFlow", copy the 16-char password',
-      'SMTP host is auto-detected from your email domain — no manual entry needed:',
-      '  • @anything.in  →  smtp.zoho.in  (India DC)',
-      '  • @anything.eu  →  smtp.zoho.eu  (EU DC)',
-      '  • everything else  →  smtp.zoho.com  (Global DC)',
-      'You can also override the host manually in the SMTP Host field if needed',
+      'SMTP host is auto-detected from your email domain — no manual entry needed',
     ],
   },
   outlook: {
@@ -58,7 +56,6 @@ const PROVIDER_TIPS: Record<Provider, { steps: string[]; docsUrl: string; warnin
     steps: [
       'Use your Microsoft account email and password',
       'If 2FA is enabled, create an App Password in Security settings',
-      'Use smtp.office365.com:587 (or smtp.gmail.com for @gmail.com accounts)',
     ],
   },
   smtp: {
@@ -66,7 +63,6 @@ const PROVIDER_TIPS: Record<Provider, { steps: string[]; docsUrl: string; warnin
     steps: [
       'Enter your SMTP host, port, username, and password',
       'Port 587 (STARTTLS) is recommended; 465 uses SSL',
-      'Works with any provider: Mailjet, Resend, Postfix, etc.',
     ],
   },
 };
@@ -77,6 +73,7 @@ const DEFAULT_FORM = {
   smtp_port: PROVIDER_META.brevo.port,
   smtp_user: '',
   smtp_pass: '',
+  api_key: '',
   daily_limit: PROVIDER_META.brevo.limitDefault,
 };
 
@@ -87,8 +84,14 @@ export default function AccountsPage() {
   const [saving, setSaving] = useState(false);
   const [testing, setTesting] = useState<string | null>(null);
   const [resetting, setResetting] = useState<string | null>(null);
+  const [syncing, setSyncing] = useState(false);
+  const [syncResult, setSyncResult] = useState<{ ok: boolean; synced: number; message?: string; accounts?: any[] } | null>(null);
   const [testResults, setTestResults] = useState<Record<string, { ok: boolean; error?: string }>>({});
   const [showTip, setShowTip] = useState(true);
+  // API key edit modal
+  const [editApiKey, setEditApiKey] = useState<Account | null>(null);
+  const [apiKeyValue, setApiKeyValue] = useState('');
+  const [savingApiKey, setSavingApiKey] = useState(false);
 
   useEffect(() => { load(); }, []);
 
@@ -111,6 +114,7 @@ export default function AccountsPage() {
       daily_limit: meta.limitDefault,
       smtp_user: '',
       smtp_pass: '',
+      api_key: '',
     }));
   }
 
@@ -165,22 +169,146 @@ export default function AccountsPage() {
     setTesting(null);
   }
 
+  async function handleSyncBrevo() {
+    setSyncing(true);
+    setSyncResult(null);
+    try {
+      const r = await fetch('/api/sync/brevo', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ days_back: 7 }),
+      }).then(r => r.json());
+      setSyncResult(r);
+    } finally {
+      setSyncing(false);
+    }
+  }
+
+  async function handleSaveApiKey() {
+    if (!editApiKey || !apiKeyValue) return;
+    setSavingApiKey(true);
+    try {
+      await fetch(`/api/accounts/${editApiKey.id}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ api_key: apiKeyValue }),
+      });
+      setEditApiKey(null);
+      setApiKeyValue('');
+      load();
+    } finally {
+      setSavingApiKey(false);
+    }
+  }
+
   const tip = PROVIDER_TIPS[form.provider];
   const meta = PROVIDER_META[form.provider];
   const needsCustomHost = form.provider === 'smtp';
   const isBrevo = form.provider === 'brevo';
+  const brevoAccounts = accounts.filter(a => a.provider === 'brevo');
+  const brevoWithKey = brevoAccounts.filter(a => a.has_api_key);
 
   return (
     <div className="p-8">
+      {/* API Key edit modal */}
+      {editApiKey && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/40 backdrop-blur-sm">
+          <div className="w-full max-w-md rounded-2xl shadow-2xl border p-6 flex flex-col gap-4"
+            style={{ background: 'var(--card-bg)', borderColor: 'var(--card-border)' }}>
+            <div>
+              <h3 className="font-semibold text-base" style={{ color: 'var(--text-primary)' }}>
+                Add Brevo API Key
+              </h3>
+              <p className="text-xs mt-1" style={{ color: 'var(--text-muted)' }}>
+                for <strong>{editApiKey.name}</strong> — enables real-time stats sync (opens, bounces, delivered)
+              </p>
+            </div>
+            <div className="rounded-lg p-3 bg-blue-50 text-blue-700 text-xs space-y-1">
+              <p className="font-medium">Where to find it:</p>
+              <p>Brevo dashboard → Account → SMTP &amp; API → <strong>API Keys tab</strong> → Create a new API key</p>
+              <a href="https://app.brevo.com/settings/keys/api" target="_blank" rel="noopener noreferrer"
+                className="inline-flex items-center gap-1 underline mt-1">
+                Open Brevo API Keys <ExternalLink size={10} />
+              </a>
+            </div>
+            <div>
+              <label className="block text-xs font-medium mb-1" style={{ color: 'var(--text-muted)' }}>
+                API Key (starts with xkeysib-)
+              </label>
+              <input
+                className="input font-mono text-sm"
+                type="password"
+                placeholder="xkeysib-..."
+                value={apiKeyValue}
+                onChange={e => setApiKeyValue(e.target.value)}
+                autoFocus
+              />
+            </div>
+            <div className="flex gap-2">
+              <button onClick={handleSaveApiKey} disabled={!apiKeyValue || savingApiKey} className="btn-primary">
+                {savingApiKey ? <Loader2 size={14} className="animate-spin" /> : <Key size={14} />}
+                Save API Key
+              </button>
+              <button onClick={() => { setEditApiKey(null); setApiKeyValue(''); }} className="btn-secondary">Cancel</button>
+            </div>
+          </div>
+        </div>
+      )}
+
       <div className="flex items-center justify-between mb-8">
         <div>
           <h1 className="text-2xl font-semibold">Email Accounts</h1>
           <p className="text-sm text-gray-500 mt-1">Connect sending accounts — rotate across multiple for higher volume</p>
         </div>
-        <button className="btn-primary" onClick={() => setShowForm(v => !v)}>
-          <Plus size={14} /> Add Account
-        </button>
+        <div className="flex items-center gap-2">
+          {brevoAccounts.length > 0 && (
+            <button
+              onClick={handleSyncBrevo}
+              disabled={syncing}
+              className="btn-secondary text-sm flex items-center gap-1.5"
+              title={brevoWithKey.length === 0 ? 'Add a Brevo API key to enable stats sync' : 'Sync opens/bounces from Brevo API'}
+            >
+              {syncing
+                ? <Loader2 size={14} className="animate-spin" />
+                : <RefreshCw size={14} />}
+              {syncing ? 'Syncing...' : 'Sync Brevo Stats'}
+            </button>
+          )}
+          <button className="btn-primary" onClick={() => setShowForm(v => !v)}>
+            <Plus size={14} /> Add Account
+          </button>
+        </div>
       </div>
+
+      {/* Sync result */}
+      {syncResult && (
+        <div className={`mb-6 rounded-xl border p-4 text-sm ${syncResult.ok ? 'bg-green-50 border-green-200 text-green-800' : 'bg-amber-50 border-amber-200 text-amber-800'}`}>
+          <div className="flex items-start gap-2">
+            {syncResult.ok ? <CheckCircle size={16} className="mt-0.5 shrink-0" /> : <Info size={16} className="mt-0.5 shrink-0" />}
+            <div className="flex-1">
+              {syncResult.ok
+                ? <><strong>{syncResult.synced}</strong> send log{syncResult.synced !== 1 ? 's' : ''} updated from Brevo (last 7 days)</>
+                : syncResult.message}
+              {syncResult.accounts && syncResult.accounts.length > 0 && (
+                <div className="mt-2 space-y-1">
+                  {syncResult.accounts.map((a: any) => (
+                    <div key={a.account} className="text-xs">
+                      <strong>{a.account}:</strong> {a.events} events fetched, {a.updated} updated
+                      {a.error && <span className="text-red-600 ml-2">— {a.error}</span>}
+                    </div>
+                  ))}
+                </div>
+              )}
+              {syncResult.ok && brevoWithKey.length === 0 && (
+                <p className="mt-2 text-xs text-amber-700">
+                  ⚠️ No Brevo API key set — add one below to enable stats sync.
+                </p>
+              )}
+            </div>
+            <button onClick={() => setSyncResult(null)} className="opacity-50 hover:opacity-80 text-xl leading-none">×</button>
+          </div>
+        </div>
+      )}
 
       {/* Brevo recommended banner */}
       {accounts.length === 0 && !showForm && (
@@ -194,8 +322,7 @@ export default function AccountsPage() {
           <div className="flex-1">
             <p className="font-semibold text-blue-900 text-sm">Start with Brevo — recommended for best inbox delivery</p>
             <p className="text-blue-700 text-xs mt-1">
-              Free account gives you 300 emails/day with proper deliverability infrastructure (shared IPs, SPF/DKIM auto-configured).
-              Unlike Gmail, Brevo is built for bulk sending so it won&apos;t flag or suspend your account.
+              Free account: 300 emails/day. Add your Brevo API key to sync real-time open/bounce/delivery stats.
             </p>
           </div>
           <button onClick={() => { setShowForm(true); handleProviderChange('brevo'); }}
@@ -272,9 +399,6 @@ export default function AccountsPage() {
                 <input className="input" type="email"
                   placeholder={isBrevo ? 'hello@yourdomain.com' : 'you@gmail.com'}
                   value={form.email} onChange={e => setField('email', e.target.value)} />
-                {isBrevo && (
-                  <p className="text-xs text-gray-400 mt-1">The address recipients see — must be verified in Brevo</p>
-                )}
               </div>
             </div>
 
@@ -287,9 +411,7 @@ export default function AccountsPage() {
                   placeholder={isBrevo ? 'abc123@smtp-brevo.com' : 'usually same as email'}
                   value={form.smtp_user} onChange={e => setField('smtp_user', e.target.value)} />
                 {isBrevo && (
-                  <p className="text-xs text-gray-400 mt-1">
-                    Found in Brevo → Account → SMTP & API → SMTP tab → &quot;Login&quot;
-                  </p>
+                  <p className="text-xs text-gray-400 mt-1">Found in Brevo → Account → SMTP &amp; API → SMTP tab → &quot;Login&quot;</p>
                 )}
               </div>
               <div>
@@ -299,13 +421,30 @@ export default function AccountsPage() {
                 <input className="input" type="password"
                   placeholder={isBrevo ? 'xsmtpsib-...' : '••••••••••••••••'}
                   value={form.smtp_pass} onChange={e => setField('smtp_pass', e.target.value)} />
-                {isBrevo && (
-                  <p className="text-xs text-gray-400 mt-1">
-                    Generate under SMTP & API → SMTP Keys (NOT the API key)
-                  </p>
-                )}
               </div>
             </div>
+
+            {/* Brevo API key field */}
+            {isBrevo && (
+              <div className="rounded-xl border border-blue-100 bg-blue-50 p-4 space-y-2">
+                <div className="flex items-center gap-2">
+                  <Zap size={14} className="text-blue-600" />
+                  <span className="text-xs font-semibold text-blue-800">Brevo API Key — unlock real-time stats</span>
+                  <span className="text-xs text-blue-500 ml-auto">Optional but recommended</span>
+                </div>
+                <p className="text-xs text-blue-700">
+                  Enables syncing actual delivery, open, click &amp; bounce data back from Brevo.
+                  Without this, reports only show sent count.
+                </p>
+                <input className="input text-sm font-mono" type="password"
+                  placeholder="xkeysib-... (from Brevo → Account → SMTP &amp; API → API Keys tab)"
+                  value={form.api_key} onChange={e => setField('api_key', e.target.value)} />
+                <a href="https://app.brevo.com/settings/keys/api" target="_blank" rel="noopener noreferrer"
+                  className="inline-flex items-center gap-1 text-xs text-blue-600 underline">
+                  Get your API key <ExternalLink size={10} />
+                </a>
+              </div>
+            )}
 
             {needsCustomHost && (
               <div className="grid grid-cols-3 gap-3">
@@ -326,14 +465,8 @@ export default function AccountsPage() {
               <label className="block text-xs font-medium text-gray-600 mb-1">Daily Send Limit</label>
               <input className="input w-40" type="number" min={1}
                 value={form.daily_limit} onChange={e => setField('daily_limit', Number(e.target.value))} />
-              <p className="text-xs text-gray-400 mt-1">
-                {isBrevo
-                  ? 'Brevo free plan: 300/day. Paid plans go much higher.'
-                  : 'Set below your provider\'s actual limit to stay safe.'}
-              </p>
             </div>
 
-            {/* Brevo: SMTP host shown read-only */}
             {!needsCustomHost && (
               <div className="flex items-center gap-2 px-3 py-2 bg-gray-50 rounded-lg text-xs text-gray-500">
                 <Info size={12} />
@@ -366,14 +499,17 @@ export default function AccountsPage() {
       ) : (
         <div className="space-y-3">
           {accounts.map(a => {
-            const pct = a.daily_limit > 0 ? Math.round((a.sent_today / a.daily_limit) * 100) : 0;
             const provMeta = PROVIDER_META[a.provider] ?? PROVIDER_META.smtp;
             const result = testResults[a.id];
+            const todayUTC = new Date().toISOString().slice(0, 10);
+            const isStale  = (a.last_reset_date ?? '') < todayUTC;
+            const sentToday = isStale ? 0 : a.sent_today;
+            const available = a.daily_limit - sentToday;
+            const usedPct   = a.daily_limit > 0 ? Math.round((sentToday / a.daily_limit) * 100) : 0;
             return (
               <div key={a.id} className="card p-5">
                 <div className="flex items-center justify-between gap-4">
                   <div className="flex items-center gap-4">
-                    {/* Provider colour dot */}
                     <div className="w-10 h-10 rounded-lg flex items-center justify-center shrink-0"
                       style={{ background: provMeta.color + '18', border: `1px solid ${provMeta.color}30` }}>
                       <Mail size={16} style={{ color: provMeta.color }} />
@@ -383,7 +519,18 @@ export default function AccountsPage() {
                         <p className="font-semibold text-gray-900">{a.name}</p>
                         <span className={provMeta.badge}>{provMeta.label}</span>
                         {!a.is_active && <span className="badge-red">Inactive</span>}
-                        {/* Show test result inline */}
+                        {a.provider === 'brevo' && (
+                          a.has_api_key
+                            ? <span className="inline-flex items-center gap-1 text-xs text-green-600 bg-green-50 border border-green-200 rounded-full px-2 py-0.5">
+                                <Zap size={10} /> Stats sync active
+                              </span>
+                            : <button
+                                onClick={() => { setEditApiKey(a); setApiKeyValue(''); }}
+                                className="inline-flex items-center gap-1 text-xs text-amber-600 bg-amber-50 border border-amber-200 rounded-full px-2 py-0.5 hover:bg-amber-100 transition-colors"
+                              >
+                                <Key size={10} /> Add API key for stats
+                              </button>
+                        )}
                         {result?.ok === true && (
                           <span className="inline-flex items-center gap-1 text-xs text-green-600 font-medium">
                             <CheckCircle size={12} /> Connected
@@ -399,73 +546,45 @@ export default function AccountsPage() {
                       {result?.ok === false && result.error && (
                         <p className="text-xs text-red-500 mt-0.5 max-w-sm truncate">{result.error}</p>
                       )}
-                      {result?.ok === false && result.error?.toLowerCase().includes('auth') && a.provider === 'zoho' && (
-                        <p className="text-xs text-amber-600 mt-1 max-w-sm">
-                          💡 Zoho tip: use an <strong>App Password</strong> (Settings → Security → App Passwords), not your account password. SMTP host is auto-detected from your email domain (.in → zoho.in, .eu → zoho.eu, else zoho.com). You can override it in the SMTP Host field.
-                        </p>
-                      )}
                     </div>
                   </div>
 
-                  <div className="flex items-center gap-5 shrink-0">
+                  <div className="flex items-center gap-4 shrink-0">
                     {/* Daily usage bar */}
-                    {(() => {
-                      const todayUTC = new Date().toISOString().slice(0, 10);
-                      const isStale  = (a.last_reset_date ?? '') < todayUTC;
-                      const sentToday = isStale ? 0 : a.sent_today;
-                      const available = a.daily_limit - sentToday;
-                      const usedPct   = a.daily_limit > 0 ? Math.round((sentToday / a.daily_limit) * 100) : 0;
-                      return (
-                        <div className="hidden md:block w-52">
-                          <div className="flex justify-between text-xs mb-1">
-                            <span className="text-gray-400">Daily credits</span>
-                            <div className="flex items-center gap-1.5">
-                              {isStale && (
-                                <span className="text-amber-500 font-medium">needs reset</span>
-                              )}
-                              <span className="tabular-nums font-semibold" style={{ color: usedPct > 80 ? '#ef4444' : usedPct > 50 ? '#f59e0b' : '#10b981' }}>
-                                {available.toLocaleString()} / {a.daily_limit.toLocaleString()}
-                              </span>
-                            </div>
-                          </div>
-                          <div className="h-2 bg-gray-100 rounded-full overflow-hidden">
-                            <div
-                              className={`h-full rounded-full transition-all duration-500 ${usedPct > 80 ? 'bg-red-500' : usedPct > 50 ? 'bg-amber-400' : 'bg-teal-500'}`}
-                              style={{ width: `${Math.min(usedPct, 100)}%` }}
-                            />
-                          </div>
-                          <div className="flex justify-between text-xs mt-0.5 text-gray-400">
-                            <span>{sentToday.toLocaleString()} used</span>
-                            <span>{available.toLocaleString()} available</span>
-                          </div>
+                    <div className="hidden md:block w-52">
+                      <div className="flex justify-between text-xs mb-1">
+                        <span className="text-gray-400">Daily credits</span>
+                        <div className="flex items-center gap-1.5">
+                          {isStale && <span className="text-amber-500 font-medium">needs reset</span>}
+                          <span className="tabular-nums font-semibold" style={{ color: usedPct > 80 ? '#ef4444' : usedPct > 50 ? '#f59e0b' : '#10b981' }}>
+                            {available.toLocaleString()} / {a.daily_limit.toLocaleString()}
+                          </span>
                         </div>
-                      );
-                    })()}
+                      </div>
+                      <div className="h-2 bg-gray-100 rounded-full overflow-hidden">
+                        <div
+                          className={`h-full rounded-full transition-all duration-500 ${usedPct > 80 ? 'bg-red-500' : usedPct > 50 ? 'bg-amber-400' : 'bg-teal-500'}`}
+                          style={{ width: `${Math.min(usedPct, 100)}%` }}
+                        />
+                      </div>
+                      <div className="flex justify-between text-xs mt-0.5 text-gray-400">
+                        <span>{sentToday.toLocaleString()} used</span>
+                        <span>{available.toLocaleString()} available</span>
+                      </div>
+                    </div>
 
-                    <button
-                      onClick={() => handleTest(a.id)}
-                      disabled={testing === a.id}
-                      className="btn-secondary text-xs py-1.5 px-3"
-                    >
-                      {testing === a.id
-                        ? <><Loader2 size={12} className="animate-spin" /> Testing...</>
-                        : 'Test'}
+                    <button onClick={() => handleTest(a.id)} disabled={testing === a.id} className="btn-secondary text-xs py-1.5 px-3">
+                      {testing === a.id ? <><Loader2 size={12} className="animate-spin" /> Testing...</> : 'Test'}
                     </button>
 
-                    <button
-                      onClick={() => handleReset(a.id)}
-                      disabled={resetting === a.id}
-                      title="Reset today's send counter (use when your provider's daily limit has refreshed)"
-                      className="btn-secondary text-xs py-1.5 px-3 flex items-center gap-1.5"
-                    >
-                      {resetting === a.id
-                        ? <Loader2 size={12} className="animate-spin" />
-                        : <RotateCcw size={12} />}
+                    <button onClick={() => handleReset(a.id)} disabled={resetting === a.id}
+                      title="Reset today's send counter"
+                      className="btn-secondary text-xs py-1.5 px-3 flex items-center gap-1.5">
+                      {resetting === a.id ? <Loader2 size={12} className="animate-spin" /> : <RotateCcw size={12} />}
                       Reset
                     </button>
 
-                    <button onClick={() => handleDelete(a.id)}
-                      className="text-gray-300 hover:text-red-500 transition-colors">
+                    <button onClick={() => handleDelete(a.id)} className="text-gray-300 hover:text-red-500 transition-colors">
                       <Trash2 size={16} />
                     </button>
                   </div>
@@ -474,7 +593,6 @@ export default function AccountsPage() {
             );
           })}
 
-          {/* Volume summary */}
           {accounts.length > 1 && (
             <div className="card p-4 bg-teal-50 border-teal-100">
               <div className="flex items-center justify-between text-sm">
