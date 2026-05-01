@@ -105,7 +105,7 @@ export default function CampaignForm({ mode, campaignId, initial }: Props) {
         body: JSON.stringify({ ...sanitizeForm(form), status }),
       });
       const data = await res.json();
-      if (data.id || data.error === undefined) router.push('/campaigns');
+      if (data.id || data.error === undefined) { router.refresh(); router.push('/campaigns'); }
       else alert(data.error ?? 'Failed to save');
     } finally { setSaving(false); }
   };
@@ -163,7 +163,7 @@ export default function CampaignForm({ mode, campaignId, initial }: Props) {
           } else if (ev === 'done') {
             setSendProgress({ sent: data.sent, failed: data.failed, total: data.total, pct: 100 });
             setSent(true);
-            setTimeout(() => router.push(`/campaigns/${cid}`), 2000);
+            setTimeout(() => { router.refresh(); router.push(`/campaigns/${cid}`); }, 2000);
           } else if (ev === 'error') {
             setSendError(data.error ?? 'Unknown error');
           }
