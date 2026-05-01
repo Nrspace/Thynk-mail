@@ -32,7 +32,7 @@ export async function POST(req: NextRequest) {
   if (list_ids?.length > 0) {
     const { count } = await db
       .from('contact_lists')
-      .select('contact_id', { count: 'exact' })
+      .select('*', { count: 'exact', head: true })
       .in('list_id', list_ids);
     total_recipients = count ?? 0;
   }
