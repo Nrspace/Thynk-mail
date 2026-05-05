@@ -1,6 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { createServerClient } from '@/lib/supabase';
-
 import { DEMO_TEAM } from '@/lib/constants';
 
 export async function GET() {
@@ -19,13 +18,23 @@ export async function POST(req: NextRequest) {
   const body = await req.json();
   const {
     name, subject, from_name, from_email, reply_to,
-    html_body, text_body, template_id, account_id,
+    html_body, text_body, template_id,
+    account_id,   // legacy single account (kept for backwards compat)
+    account_ids,  // new: array of account IDs
     list_ids, status, scheduled_at,
   } = body;
 
   if (!name || !subject || !from_name || !from_email) {
     return NextResponse.json({ error: 'Missing required fields' }, { status: 400 });
   }
+
+  // Normalise account_ids — support both single and multi
+  const resolvedAccountIds: string[] = Array.isArray(account_ids) && account_ids.length
+    ? account_ids
+    : account_id ? [account_id] : [];
+
+  // primary account_id = first in list (for backwards compat with single-account queries)
+  const primaryAccountId = resolvedAccountIds[0] ?? null;
 
   // Count total recipients from selected lists
   let total_recipients = 0;
@@ -46,7 +55,8 @@ export async function POST(req: NextRequest) {
       html_body:    html_body    || '',
       text_body:    text_body    || null,
       template_id:  template_id  || null,
-      account_id:   account_id   || null,
+      account_id:   primaryAccountId,
+      account_ids:  resolvedAccountIds,
       list_ids:     list_ids     || [],
       status:       status       || 'draft',
       scheduled_at: scheduled_at || null,
@@ -56,15 +66,6 @@ export async function POST(req: NextRequest) {
     .single();
 
   if (error) return NextResponse.json({ error: error.message }, { status: 500 });
-
-  // If status is 'sending', trigger the queue
-  if (status === 'sending' && data?.id) {
-    await fetch(`${process.env.NEXT_PUBLIC_APP_URL}/api/send/queue`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ campaign_id: data.id }),
-    }).catch(() => null);
-  }
 
   return NextResponse.json(data, { status: 201 });
 }

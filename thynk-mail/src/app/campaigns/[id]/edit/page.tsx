@@ -21,6 +21,10 @@ export default function EditCampaignPage({ params }: Props) {
           reply_to:     data.reply_to    ?? '',
           html_body:    data.html_body   ?? '',
           account_id:   data.account_id  ?? '',
+          // Multi-account: prefer account_ids, fall back to wrapping account_id
+          account_ids:  Array.isArray(data.account_ids) && data.account_ids.length
+            ? data.account_ids
+            : data.account_id ? [data.account_id] : [],
           list_ids:     data.list_ids    ?? [],
           template_id:  data.template_id ?? '',
           scheduled_at: data.scheduled_at

@@ -4,33 +4,66 @@ import { sendEmail } from '@/lib/smtp-router';
 import { buildFinalHtml } from '@/lib/template-renderer';
 import type { EmailAccount, Contact } from '@/types';
 
-export const maxDuration = 300; // App Router: 300s. Vercel Hobby plan is capped at 60s.
+export const maxDuration = 300;
 
 const RATE_DELAY_MS = 1200;
 const sleep = (ms: number) => new Promise(r => setTimeout(r, ms));
-
-// ─────────────────────────────────────────────────────────────────────────────
-// WHY STREAMING?
-// Vercel's gateway closes any connection that receives no bytes for ~25-30 s.
-// A campaign with 50+ contacts at 1.2 s/email = 60+ seconds before response.
-// The gateway then returns an HTML 504 page, which JSON.parse() blows up on
-// producing: "Unexpected token 'A', 'An error o...' is not valid JSON"
-//
-// Fix: return a text/event-stream immediately, then emit progress events as
-// each email is sent. The stream keeps the gateway alive for the full 5 min
-// window granted by maxDuration:300 in vercel.json.
-// ─────────────────────────────────────────────────────────────────────────────
 
 function makeStream() {
   const { readable, writable } = new TransformStream();
   const writer = writable.getWriter();
   const enc = new TextEncoder();
-
   const emit = (event: string, data: Record<string, unknown>) => {
     writer.write(enc.encode(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`)).catch(() => {});
   };
   const done = () => writer.close().catch(() => {});
   return { readable, emit, done };
+}
+
+// ─── Multi-account round-robin router ────────────────────────────────────────
+// Picks the next account with remaining daily capacity, cycling through the
+// list. Returns null when ALL accounts are exhausted for the day.
+class AccountRotator {
+  private accounts: EmailAccount[];
+  private sentToday: Map<string, number>;
+  private idx: number;
+  private todayUTC: string;
+
+  constructor(accounts: EmailAccount[]) {
+    this.todayUTC = new Date().toISOString().slice(0, 10);
+    this.accounts = accounts;
+    this.sentToday = new Map(
+      accounts.map(a => [
+        a.id,
+        (a.last_reset_date ?? '') < this.todayUTC ? 0 : (a.sent_today ?? 0),
+      ])
+    );
+    this.idx = 0;
+  }
+
+  /** Get next available account, or null if all exhausted */
+  next(): EmailAccount | null {
+    const n = this.accounts.length;
+    for (let i = 0; i < n; i++) {
+      const acc = this.accounts[(this.idx + i) % n];
+      const used = this.sentToday.get(acc.id) ?? 0;
+      if (used < acc.daily_limit) {
+        this.idx = (this.idx + i + 1) % n; // advance pointer past this one
+        return acc;
+      }
+    }
+    return null; // all exhausted
+  }
+
+  /** Record a sent email against an account */
+  recordSent(accountId: string) {
+    this.sentToday.set(accountId, (this.sentToday.get(accountId) ?? 0) + 1);
+  }
+
+  /** Get current sent count for an account */
+  getSentToday(accountId: string) {
+    return this.sentToday.get(accountId) ?? 0;
+  }
 }
 
 export async function POST(req: NextRequest) {
@@ -51,7 +84,6 @@ export async function POST(req: NextRequest) {
 
   const { readable, emit, done } = makeStream();
 
-  // Run in background — don't await so the SSE Response is returned immediately
   (async () => {
     const db = createServerClient();
     const APP_URL = process.env.NEXT_PUBLIC_APP_URL ?? 'http://localhost:3000';
@@ -67,17 +99,42 @@ export async function POST(req: NextRequest) {
       const { data: campaign, error: cErr } = await db
         .from('campaigns').select('*').eq('id', campaign_id).single();
       if (cErr || !campaign) return fail(`Campaign not found: ${cErr?.message ?? 'no data'}`);
-      if (!campaign.account_id) return fail('No sending account assigned');
 
-      // Load account
-      const { data: account, error: aErr } = await db
-        .from('email_accounts').select('*').eq('id', campaign.account_id).single();
-      if (aErr || !account) return fail(`Email account not found: ${aErr?.message ?? 'no data'}`);
-      if (!account.is_active) return fail('Email account is inactive');
+      // Resolve account IDs — support both new account_ids[] and legacy account_id
+      const rawAccountIds: string[] = Array.isArray(campaign.account_ids) && campaign.account_ids.length
+        ? campaign.account_ids
+        : campaign.account_id
+          ? [campaign.account_id]
+          : [];
+
+      if (!rawAccountIds.length) return fail('No sending account(s) assigned to this campaign');
+
+      // Load all selected accounts
+      const { data: accountRows, error: aErr } = await db
+        .from('email_accounts').select('*').in('id', rawAccountIds);
+      if (aErr || !accountRows?.length) return fail(`Email account(s) not found: ${aErr?.message ?? 'no data'}`);
+
+      const activeAccounts = accountRows.filter((a: any) => a.is_active);
+      if (!activeAccounts.length) return fail('All selected email accounts are inactive');
+
+      // Auto-reset sent_today for accounts where it's a new UTC day
+      const todayUTC = new Date().toISOString().slice(0, 10);
+      for (const acc of activeAccounts) {
+        const lastReset = acc.last_reset_date ?? '';
+        if (lastReset < todayUTC) {
+          await db.from('email_accounts')
+            .update({ sent_today: 0, last_reset_date: todayUTC })
+            .eq('id', acc.id);
+          acc.sent_today = 0;
+          acc.last_reset_date = todayUTC;
+        }
+      }
+
+      const rotator = new AccountRotator(activeAccounts as EmailAccount[]);
 
       // Mark sending
       await db.from('campaigns').update({ status: 'sending' }).eq('id', campaign_id);
-      emit('status', { status: 'sending' });
+      emit('status', { status: 'sending', accounts: activeAccounts.length });
 
       // Load contacts
       const listIds: string[] = campaign.list_ids ?? [];
@@ -108,9 +165,11 @@ export async function POST(req: NextRequest) {
 
       emit('progress', { sent: 0, failed: 0, total: eligible.length, pct: 0 });
 
-      // Create send logs (bulk)
+      // Create send logs (bulk) — account_id will be set per-email during sending
       const logRows = eligible.map((c: Contact) => ({
-        campaign_id, contact_id: c.id, account_id: account.id, status: 'queued',
+        campaign_id, contact_id: c.id,
+        account_id: rawAccountIds[0], // placeholder, updated per send
+        status: 'queued',
       }));
       const { data: logs, error: logsErr } = await db
         .from('send_logs').insert(logRows).select('id, contact_id');
@@ -118,34 +177,28 @@ export async function POST(req: NextRequest) {
 
       await db.from('campaigns').update({ total_recipients: eligible.length }).eq('id', campaign_id);
 
-      // ── Auto-reset sent_today if it's a new UTC day ─────────────────────
-      // The schema has last_reset_date for exactly this purpose.
-      // Without this check, yesterday's count blocks all sends today.
-      const todayUTC = new Date().toISOString().slice(0, 10); // 'YYYY-MM-DD'
-      const lastReset = account.last_reset_date ?? '';        // e.g. '2026-04-28'
-      if (lastReset < todayUTC) {
-        await db.from('email_accounts')
-          .update({ sent_today: 0, last_reset_date: todayUTC })
-          .eq('id', account.id);
-        account.sent_today = 0;
-        account.last_reset_date = todayUTC;
-        emit('status', { status: 'sending', message: 'Daily counter reset for new day' });
-      }
-
-      // ── Send loop ────────────────────────────────────────────────────────
+      // ── Send loop with multi-account rotation ────────────────────────────
       let sentCount = 0;
       let failCount = 0;
-      let sentToday = account.sent_today ?? 0;
       const total = eligible.length;
 
       for (const log of logs ?? []) {
         const contact = eligible.find((c: Contact) => c.id === log.contact_id);
         if (!contact) continue;
 
-        if (sentToday >= account.daily_limit) {
-          await db.from('send_logs').update({ status: 'failed', error_message: 'Daily limit reached' }).eq('id', log.id);
+        // Pick next available account
+        const account = rotator.next();
+        if (!account) {
+          // All accounts exhausted
+          await db.from('send_logs').update({
+            status: 'failed',
+            error_message: 'All sending accounts reached daily limit',
+          }).eq('id', log.id);
           failCount++;
-          emit('progress', { sent: sentCount, failed: failCount, total, pct: Math.round(((sentCount + failCount) / total) * 100) });
+          emit('progress', {
+            sent: sentCount, failed: failCount, total,
+            pct: Math.round(((sentCount + failCount) / total) * 100),
+          });
           continue;
         }
 
@@ -173,19 +226,27 @@ export async function POST(req: NextRequest) {
 
         if (result.success) {
           sentCount++;
-          sentToday++;
+          rotator.recordSent(account.id);
+          const newSentToday = rotator.getSentToday(account.id);
           await db.from('send_logs').update({
-            status: 'sent', message_id: result.messageId ?? null, sent_at: new Date().toISOString(),
+            status: 'sent',
+            account_id: account.id,
+            message_id: result.messageId ?? null,
+            sent_at: new Date().toISOString(),
           }).eq('id', log.id);
-          await db.from('email_accounts').update({ sent_today: sentToday }).eq('id', account.id);
+          // Update account sent_today counter
+          await db.from('email_accounts')
+            .update({ sent_today: newSentToday })
+            .eq('id', account.id);
         } else {
           failCount++;
           await db.from('send_logs').update({
-            status: 'failed', error_message: result.error ?? 'Unknown error',
+            status: 'failed',
+            account_id: account.id,
+            error_message: result.error ?? 'Unknown error',
           }).eq('id', log.id);
         }
 
-        // Emit after EVERY email — this keeps the gateway alive
         emit('progress', {
           sent: sentCount, failed: failCount, total,
           pct: Math.round(((sentCount + failCount) / total) * 100),
@@ -197,7 +258,9 @@ export async function POST(req: NextRequest) {
       // Finalize
       const finalStatus = sentCount > 0 ? 'sent' : 'failed';
       await db.from('campaigns').update({
-        status: finalStatus, sent_at: new Date().toISOString(), sent_count: sentCount,
+        status: finalStatus,
+        sent_at: new Date().toISOString(),
+        sent_count: sentCount,
       }).eq('id', campaign_id);
 
       emit('done', { success: true, sent: sentCount, failed: failCount, total });

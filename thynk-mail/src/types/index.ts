@@ -86,6 +86,7 @@ export interface Campaign {
   text_body?: string;
   template_id?: string;
   account_id: string;
+  account_ids: string[];  // multi-account support
   list_ids: string[];
   status: CampaignStatus;
   scheduled_at?: string;

@@ -1,6 +1,6 @@
 'use client';
 import { useState, useEffect } from 'react';
-import { Mail, Plus, Trash2, CheckCircle, XCircle, Loader2, ExternalLink, Info, RotateCcw, RefreshCw, Key, Zap } from 'lucide-react';
+import { Mail, Plus, Trash2, CheckCircle, XCircle, Loader2, ExternalLink, Info, RotateCcw, RefreshCw, Key, Zap, Edit2, X, Save } from 'lucide-react';
 
 type Provider = 'gmail' | 'zoho' | 'outlook' | 'brevo' | 'smtp';
 
@@ -75,7 +75,10 @@ const DEFAULT_FORM = {
   smtp_pass: '',
   api_key: '',
   daily_limit: PROVIDER_META.brevo.limitDefault,
+  is_active: true,
 };
+
+type EditForm = typeof DEFAULT_FORM & { id: string };
 
 export default function AccountsPage() {
   const [accounts, setAccounts] = useState<Account[]>([]);
@@ -88,7 +91,13 @@ export default function AccountsPage() {
   const [syncResult, setSyncResult] = useState<{ ok: boolean; synced: number; message?: string; accounts?: any[] } | null>(null);
   const [testResults, setTestResults] = useState<Record<string, { ok: boolean; error?: string }>>({});
   const [showTip, setShowTip] = useState(true);
-  // API key edit modal
+
+  // Edit modal state
+  const [editAccount, setEditAccount] = useState<EditForm | null>(null);
+  const [editSaving, setEditSaving] = useState(false);
+  const [editShowTip, setEditShowTip] = useState(false);
+
+  // Legacy API key modal (kept for backwards compat)
   const [editApiKey, setEditApiKey] = useState<Account | null>(null);
   const [apiKeyValue, setApiKeyValue] = useState('');
   const [savingApiKey, setSavingApiKey] = useState(false);
@@ -104,6 +113,10 @@ export default function AccountsPage() {
     setForm(f => ({ ...f, [k]: v }));
   }
 
+  function setEditField(k: string, v: unknown) {
+    setEditAccount(f => f ? { ...f, [k]: v } : f);
+  }
+
   function handleProviderChange(p: Provider) {
     const meta = PROVIDER_META[p];
     setForm(f => ({
@@ -116,6 +129,24 @@ export default function AccountsPage() {
       smtp_pass: '',
       api_key: '',
     }));
+  }
+
+  // Open edit modal — pre-fill all known fields
+  function openEdit(a: Account) {
+    setEditAccount({
+      id:          a.id,
+      name:        a.name,
+      email:       a.email,
+      provider:    a.provider,
+      smtp_host:   a.smtp_host  ?? PROVIDER_META[a.provider]?.host ?? '',
+      smtp_port:   a.smtp_port  ?? PROVIDER_META[a.provider]?.port ?? 587,
+      smtp_user:   a.smtp_user  ?? '',
+      smtp_pass:   '', // never pre-fill passwords for security
+      api_key:     '', // never pre-fill, but user can set new value
+      daily_limit: a.daily_limit,
+      is_active:   a.is_active,
+    });
+    setEditShowTip(false);
   }
 
   async function handleAdd() {
@@ -137,6 +168,46 @@ export default function AccountsPage() {
       load();
     } finally {
       setSaving(false);
+    }
+  }
+
+  async function handleEditSave() {
+    if (!editAccount) return;
+    if (!editAccount.name || !editAccount.email) {
+      alert('Name and email address are required.');
+      return;
+    }
+    setEditSaving(true);
+    try {
+      // Only send smtp_pass if user typed a new one
+      const payload: Record<string, unknown> = {
+        name:        editAccount.name,
+        email:       editAccount.email,
+        provider:    editAccount.provider,
+        smtp_host:   editAccount.smtp_host,
+        smtp_port:   editAccount.smtp_port,
+        smtp_user:   editAccount.smtp_user,
+        daily_limit: editAccount.daily_limit,
+        is_active:   editAccount.is_active,
+      };
+      if (editAccount.smtp_pass.trim()) {
+        payload.smtp_pass = editAccount.smtp_pass;
+      }
+      if (editAccount.api_key.trim()) {
+        payload.api_key = editAccount.api_key;
+      }
+
+      const res = await fetch(`/api/accounts/${editAccount.id}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload),
+      });
+      const data = await res.json();
+      if (data.error) { alert(data.error); return; }
+      setEditAccount(null);
+      load();
+    } finally {
+      setEditSaving(false);
     }
   }
 
@@ -208,9 +279,235 @@ export default function AccountsPage() {
   const brevoAccounts = accounts.filter(a => a.provider === 'brevo');
   const brevoWithKey = brevoAccounts.filter(a => a.has_api_key);
 
+  // Edit modal computed
+  const editMeta   = editAccount ? PROVIDER_META[editAccount.provider] : null;
+  const editTip    = editAccount ? PROVIDER_TIPS[editAccount.provider] : null;
+  const editIsBrevo = editAccount?.provider === 'brevo';
+  const editNeedsCustomHost = editAccount?.provider === 'smtp';
+
   return (
     <div className="p-8">
-      {/* API Key edit modal */}
+
+      {/* ── EDIT ACCOUNT MODAL ─────────────────────────────────────────────── */}
+      {editAccount && editMeta && editTip && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/50 backdrop-blur-sm">
+          <div
+            className="w-full max-w-2xl rounded-2xl shadow-2xl border flex flex-col max-h-[90vh]"
+            style={{ background: 'var(--card-bg)', borderColor: 'var(--card-border)' }}
+          >
+            {/* Modal header */}
+            <div className="flex items-center justify-between px-6 py-4 border-b" style={{ borderColor: 'var(--card-border)' }}>
+              <div className="flex items-center gap-3">
+                <div className="w-9 h-9 rounded-lg flex items-center justify-center"
+                  style={{ background: editMeta.color + '18', border: `1px solid ${editMeta.color}30` }}>
+                  <Mail size={16} style={{ color: editMeta.color }} />
+                </div>
+                <div>
+                  <h2 className="font-semibold text-base" style={{ color: 'var(--text-primary)' }}>Edit Account</h2>
+                  <p className="text-xs" style={{ color: 'var(--text-muted)' }}>{editAccount.email}</p>
+                </div>
+              </div>
+              <button onClick={() => setEditAccount(null)}
+                className="text-gray-400 hover:text-gray-600 transition-colors p-1 rounded-lg hover:bg-gray-100">
+                <X size={18} />
+              </button>
+            </div>
+
+            {/* Modal body — scrollable */}
+            <div className="overflow-y-auto flex-1 px-6 py-5 space-y-5">
+
+              {/* Provider tabs */}
+              <div>
+                <label className="block text-xs font-medium mb-2" style={{ color: 'var(--text-muted)' }}>Provider</label>
+                <div className="grid grid-cols-5 gap-2">
+                  {(Object.keys(PROVIDER_META) as Provider[]).map(p => (
+                    <button key={p}
+                      onClick={() => {
+                        const m = PROVIDER_META[p];
+                        setEditAccount(f => f ? {
+                          ...f,
+                          provider: p,
+                          smtp_host: m.host || f.smtp_host,
+                          smtp_port: m.port,
+                        } : f);
+                      }}
+                      className={`px-3 py-2.5 rounded-lg border text-xs font-medium transition-all ${
+                        editAccount.provider === p
+                          ? 'border-teal-500 bg-teal-50 text-teal-700 shadow-sm'
+                          : 'border-gray-200 text-gray-500 hover:border-gray-300 hover:bg-gray-50'
+                      }`}>
+                      {PROVIDER_META[p].label}
+                    </button>
+                  ))}
+                </div>
+              </div>
+
+              {/* Setup guide toggle */}
+              <div>
+                <button
+                  onClick={() => setEditShowTip(v => !v)}
+                  className="text-xs text-teal-600 underline hover:no-underline">
+                  {editShowTip ? 'Hide' : 'Show'} setup guide for {editMeta.label}
+                </button>
+                {editShowTip && (
+                  <div className={`rounded-lg p-4 mt-2 text-xs space-y-1.5 ${editIsBrevo ? 'bg-blue-50 text-blue-800' : 'bg-amber-50 text-amber-800'}`}>
+                    <p className="font-semibold text-sm mb-2">
+                      {editIsBrevo ? '🚀 Brevo setup guide' : `${editMeta.label} setup`}
+                    </p>
+                    {editTip.steps.map((s, i) => (
+                      <div key={i} className="flex gap-2">
+                        <span className="shrink-0 font-bold opacity-60">{i + 1}.</span>
+                        <span>{s}</span>
+                      </div>
+                    ))}
+                    {editTip.warning && (
+                      <div className="flex gap-2 mt-2 pt-2 border-t border-amber-200">
+                        <span>⚠️</span><span className="font-medium">{editTip.warning}</span>
+                      </div>
+                    )}
+                    {editTip.docsUrl && (
+                      <a href={editTip.docsUrl} target="_blank" rel="noopener noreferrer"
+                        className="inline-flex items-center gap-1 mt-2 underline opacity-70 hover:opacity-100">
+                        Open {editMeta.label} dashboard <ExternalLink size={10} />
+                      </a>
+                    )}
+                  </div>
+                )}
+              </div>
+
+              {/* Name + Email */}
+              <div className="grid grid-cols-2 gap-3">
+                <div>
+                  <label className="block text-xs font-medium mb-1" style={{ color: 'var(--text-muted)' }}>Display Name</label>
+                  <input className="input" placeholder="e.g. Thynk Success"
+                    value={editAccount.name} onChange={e => setEditField('name', e.target.value)} />
+                </div>
+                <div>
+                  <label className="block text-xs font-medium mb-1" style={{ color: 'var(--text-muted)' }}>
+                    {editIsBrevo ? '"From" Email Address' : 'Email Address'}
+                  </label>
+                  <input className="input" type="email"
+                    placeholder="you@domain.com"
+                    value={editAccount.email} onChange={e => setEditField('email', e.target.value)} />
+                </div>
+              </div>
+
+              {/* SMTP Username + Password */}
+              <div className="grid grid-cols-2 gap-3">
+                <div>
+                  <label className="block text-xs font-medium mb-1" style={{ color: 'var(--text-muted)' }}>
+                    {editIsBrevo ? 'Brevo SMTP Login' : 'SMTP Username'}
+                  </label>
+                  <input className="input"
+                    placeholder={editIsBrevo ? 'abc123@smtp-brevo.com' : 'usually same as email'}
+                    value={editAccount.smtp_user} onChange={e => setEditField('smtp_user', e.target.value)} />
+                  {editIsBrevo && (
+                    <p className="text-xs text-gray-400 mt-1">Found in Brevo → Account → SMTP & API → SMTP tab → "Login"</p>
+                  )}
+                </div>
+                <div>
+                  <label className="block text-xs font-medium mb-1" style={{ color: 'var(--text-muted)' }}>
+                    {editIsBrevo ? 'Brevo SMTP Key' : 'App Password / SMTP Password'}
+                  </label>
+                  <input className="input" type="password"
+                    placeholder="Leave blank to keep existing password"
+                    value={editAccount.smtp_pass} onChange={e => setEditField('smtp_pass', e.target.value)} />
+                  <p className="text-xs text-gray-400 mt-1">Leave blank to keep the existing password unchanged</p>
+                </div>
+              </div>
+
+              {/* Brevo API key */}
+              {editIsBrevo && (
+                <div className="rounded-xl border border-blue-100 bg-blue-50 p-4 space-y-2">
+                  <div className="flex items-center gap-2">
+                    <Zap size={14} className="text-blue-600" />
+                    <span className="text-xs font-semibold text-blue-800">Brevo API Key — unlock real-time stats</span>
+                    <span className="text-xs text-blue-500 ml-auto">Optional but recommended</span>
+                  </div>
+                  <p className="text-xs text-blue-700">
+                    Enables syncing actual delivery, open, click &amp; bounce data back from Brevo.
+                    Without this, reports only show sent count.
+                  </p>
+                  <input className="input text-sm font-mono" type="password"
+                    placeholder={`${editAccount.provider === 'brevo' ? 'Leave blank to keep existing key · or paste new xkeysib-... key' : 'xkeysib-...'}`}
+                    value={editAccount.api_key} onChange={e => setEditField('api_key', e.target.value)} />
+                  <a href="https://app.brevo.com/settings/keys/api" target="_blank" rel="noopener noreferrer"
+                    className="inline-flex items-center gap-1 text-xs text-blue-600 underline">
+                    Get your API key <ExternalLink size={10} />
+                  </a>
+                </div>
+              )}
+
+              {/* Custom SMTP host/port */}
+              {editNeedsCustomHost && (
+                <div className="grid grid-cols-3 gap-3">
+                  <div className="col-span-2">
+                    <label className="block text-xs font-medium mb-1" style={{ color: 'var(--text-muted)' }}>SMTP Host</label>
+                    <input className="input" placeholder="smtp.example.com"
+                      value={editAccount.smtp_host} onChange={e => setEditField('smtp_host', e.target.value)} />
+                  </div>
+                  <div>
+                    <label className="block text-xs font-medium mb-1" style={{ color: 'var(--text-muted)' }}>Port</label>
+                    <input className="input" type="number"
+                      value={editAccount.smtp_port} onChange={e => setEditField('smtp_port', Number(e.target.value))} />
+                  </div>
+                </div>
+              )}
+
+              {/* Host info for non-custom */}
+              {!editNeedsCustomHost && editMeta.host && (
+                <div className="flex items-center gap-2 px-3 py-2 bg-gray-50 rounded-lg text-xs text-gray-500">
+                  <Info size={12} />
+                  SMTP host: <span className="font-mono font-medium text-gray-700">{editMeta.host}:{editMeta.port}</span>
+                  — configured automatically
+                </div>
+              )}
+
+              {/* Daily limit + Active toggle */}
+              <div className="grid grid-cols-2 gap-4">
+                <div>
+                  <label className="block text-xs font-medium mb-1" style={{ color: 'var(--text-muted)' }}>Daily Send Limit</label>
+                  <input className="input" type="number" min={1}
+                    value={editAccount.daily_limit} onChange={e => setEditField('daily_limit', Number(e.target.value))} />
+                  <p className="text-xs text-gray-400 mt-1">Max emails this account can send per day</p>
+                </div>
+                <div>
+                  <label className="block text-xs font-medium mb-1" style={{ color: 'var(--text-muted)' }}>Account Status</label>
+                  <label className="flex items-center gap-3 mt-2 cursor-pointer">
+                    <div
+                      onClick={() => setEditField('is_active', !editAccount.is_active)}
+                      className={`relative w-10 h-5 rounded-full transition-colors cursor-pointer ${editAccount.is_active ? 'bg-teal-500' : 'bg-gray-300'}`}>
+                      <div className={`absolute top-0.5 left-0.5 w-4 h-4 bg-white rounded-full shadow transition-transform ${editAccount.is_active ? 'translate-x-5' : 'translate-x-0'}`} />
+                    </div>
+                    <span className="text-sm font-medium" style={{ color: 'var(--text-primary)' }}>
+                      {editAccount.is_active ? 'Active' : 'Inactive'}
+                    </span>
+                  </label>
+                  <p className="text-xs text-gray-400 mt-1">Inactive accounts are skipped during sending</p>
+                </div>
+              </div>
+            </div>
+
+            {/* Modal footer */}
+            <div className="flex items-center gap-3 px-6 py-4 border-t" style={{ borderColor: 'var(--card-border)' }}>
+              <button onClick={handleEditSave} disabled={editSaving} className="btn-primary">
+                {editSaving
+                  ? <><Loader2 size={14} className="animate-spin" /> Saving...</>
+                  : <><Save size={14} /> Save Changes</>
+                }
+              </button>
+              <button onClick={() => setEditAccount(null)} className="btn-secondary">Cancel</button>
+              {editAccount && (
+                <span className="ml-auto text-xs text-gray-400">
+                  Passwords left blank will not be changed
+                </span>
+              )}
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* ── Legacy API Key modal ───────────────────────────────────────────── */}
       {editApiKey && (
         <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/40 backdrop-blur-sm">
           <div className="w-full max-w-md rounded-2xl shadow-2xl border p-6 flex flex-col gap-4"
@@ -255,6 +552,7 @@ export default function AccountsPage() {
         </div>
       )}
 
+      {/* ── Page header ───────────────────────────────────────────────────── */}
       <div className="flex items-center justify-between mb-8">
         <div>
           <h1 className="text-2xl font-semibold">Email Accounts</h1>
@@ -299,11 +597,6 @@ export default function AccountsPage() {
                   ))}
                 </div>
               )}
-              {syncResult.ok && brevoWithKey.length === 0 && (
-                <p className="mt-2 text-xs text-amber-700">
-                  ⚠️ No Brevo API key set — add one below to enable stats sync.
-                </p>
-              )}
             </div>
             <button onClick={() => setSyncResult(null)} className="opacity-50 hover:opacity-80 text-xl leading-none">×</button>
           </div>
@@ -332,32 +625,27 @@ export default function AccountsPage() {
         </div>
       )}
 
-      {/* Add account form */}
+      {/* ── Add account form ───────────────────────────────────────────────── */}
       {showForm && (
         <div className="card p-6 mb-6 max-w-2xl">
           <h2 className="font-semibold mb-5 text-gray-800">Connect New Account</h2>
 
-          {/* Provider selector */}
           <div className="mb-5">
             <label className="block text-xs font-medium text-gray-600 mb-2">Provider</label>
             <div className="grid grid-cols-5 gap-2">
               {(Object.keys(PROVIDER_META) as Provider[]).map(p => (
-                <button
-                  key={p}
-                  onClick={() => handleProviderChange(p)}
+                <button key={p} onClick={() => handleProviderChange(p)}
                   className={`px-3 py-2.5 rounded-lg border text-xs font-medium transition-all ${
                     form.provider === p
                       ? 'border-teal-500 bg-teal-50 text-teal-700 shadow-sm'
                       : 'border-gray-200 text-gray-500 hover:border-gray-300 hover:bg-gray-50'
-                  }`}
-                >
+                  }`}>
                   {PROVIDER_META[p].label}
                 </button>
               ))}
             </div>
           </div>
 
-          {/* Setup guide */}
           {showTip && (
             <div className={`rounded-lg p-4 mb-5 text-xs space-y-1.5 relative ${isBrevo ? 'bg-blue-50 text-blue-800' : 'bg-amber-50 text-amber-800'}`}>
               <button onClick={() => setShowTip(false)} className="absolute top-2 right-3 opacity-40 hover:opacity-80 text-lg leading-none">×</button>
@@ -384,7 +672,6 @@ export default function AccountsPage() {
             </div>
           )}
 
-          {/* Form fields */}
           <div className="space-y-3">
             <div className="grid grid-cols-2 gap-3">
               <div>
@@ -424,7 +711,6 @@ export default function AccountsPage() {
               </div>
             </div>
 
-            {/* Brevo API key field */}
             {isBrevo && (
               <div className="rounded-xl border border-blue-100 bg-blue-50 p-4 space-y-2">
                 <div className="flex items-center gap-2">
@@ -486,7 +772,7 @@ export default function AccountsPage() {
         </div>
       )}
 
-      {/* Accounts list */}
+      {/* ── Accounts list ─────────────────────────────────────────────────── */}
       {accounts.length === 0 && !showForm ? (
         <div className="card py-20 text-center text-gray-400">
           <Mail size={36} className="mx-auto mb-3 opacity-25" />
@@ -549,7 +835,7 @@ export default function AccountsPage() {
                     </div>
                   </div>
 
-                  <div className="flex items-center gap-4 shrink-0">
+                  <div className="flex items-center gap-3 shrink-0">
                     {/* Daily usage bar */}
                     <div className="hidden md:block w-52">
                       <div className="flex justify-between text-xs mb-1">
@@ -572,6 +858,15 @@ export default function AccountsPage() {
                         <span>{available.toLocaleString()} available</span>
                       </div>
                     </div>
+
+                    {/* Edit button */}
+                    <button
+                      onClick={() => openEdit(a)}
+                      className="btn-secondary text-xs py-1.5 px-3 flex items-center gap-1.5"
+                      title="Edit account"
+                    >
+                      <Edit2 size={12} /> Edit
+                    </button>
 
                     <button onClick={() => handleTest(a.id)} disabled={testing === a.id} className="btn-secondary text-xs py-1.5 px-3">
                       {testing === a.id ? <><Loader2 size={12} className="animate-spin" /> Testing...</> : 'Test'}

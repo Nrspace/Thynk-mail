@@ -10,7 +10,8 @@ import Link from 'next/link';
 interface Campaign {
   id: string; name: string; status: string;
   subject: string; from_name: string; from_email: string;
-  reply_to?: string; html_body: string; account_id: string;
+  reply_to?: string; html_body: string;
+  account_id: string; account_ids?: string[];
   list_ids: string[]; template_id?: string; scheduled_at?: string;
 }
 
@@ -127,7 +128,9 @@ export default function CampaignActions({ campaign }: { campaign: Campaign }) {
           name: `${campaign.name} (Copy)`, subject: campaign.subject,
           from_name: campaign.from_name, from_email: campaign.from_email,
           reply_to: campaign.reply_to ?? '', html_body: campaign.html_body,
-          account_id: campaign.account_id, list_ids: campaign.list_ids,
+          account_id: campaign.account_id,
+          account_ids: campaign.account_ids ?? (campaign.account_id ? [campaign.account_id] : []),
+          list_ids: campaign.list_ids,
           template_id: campaign.template_id ?? '', status: 'draft',
         }),
       });
