@@ -37,6 +37,7 @@ export interface EmailAccount {
   oauth_token_encrypted?: string;
   daily_limit: number;
   sent_today: number;
+  last_reset_date?: string;
   is_active: boolean;
   team_id: string;
   created_at: string;
