@@ -97,8 +97,9 @@ function PreviewModal({ template, onClose }: { template: Template; onClose: () =
   );
 }
 
-export default function TemplateList({ templates }: { templates: Template[] }) {
+export default function TemplateList({ templates: initialTemplates }: { templates: Template[] }) {
   const router = useRouter();
+  const [items, setItems] = useState<Template[]>(initialTemplates);
   const [preview, setPreview] = useState<Template | null>(null);
   const [deleting, setDeleting] = useState<string | null>(null);
   const [copying, setCopying] = useState<string | null>(null);
@@ -106,9 +107,25 @@ export default function TemplateList({ templates }: { templates: Template[] }) {
   async function handleDelete(t: Template) {
     if (!confirm(`Delete template "${t.name}"? This cannot be undone.`)) return;
     setDeleting(t.id);
+    // Optimistically remove from local list immediately
+    setItems(prev => prev.filter(x => x.id !== t.id));
+    // Close preview if the deleted template is open
+    setPreview(p => (p?.id === t.id ? null : p));
     try {
-      await fetch(`/api/templates/${t.id}`, { method: 'DELETE' });
-      router.refresh();
+      const res = await fetch(`/api/templates/${t.id}`, { method: 'DELETE' });
+      if (!res.ok) {
+        // Restore item if delete failed
+        setItems(prev => [t, ...prev].sort(
+          (a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime()
+        ));
+        alert('Failed to delete template. Please try again.');
+      }
+    } catch {
+      // Restore item on network error
+      setItems(prev => [t, ...prev].sort(
+        (a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime()
+      ));
+      alert('Failed to delete template. Please try again.');
     } finally {
       setDeleting(null);
     }
@@ -136,7 +153,7 @@ export default function TemplateList({ templates }: { templates: Template[] }) {
     }
   }
 
-  if (templates.length === 0) {
+  if (items.length === 0) {
     return (
       <div className="card py-20 text-center text-gray-400">
         <FileText size={36} className="mx-auto mb-3 opacity-25" />
@@ -156,7 +173,7 @@ export default function TemplateList({ templates }: { templates: Template[] }) {
       )}
 
       <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-4">
-        {templates.map(t => (
+        {items.map(t => (
           <div key={t.id} className="card overflow-hidden flex flex-col hover:shadow-md transition-shadow group">
             {/* Preview thumbnail — click to expand */}
             <button
