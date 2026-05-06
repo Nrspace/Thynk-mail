@@ -210,17 +210,18 @@ export async function POST(req: NextRequest) {
         // Pick next available account
         const account = rotator.next();
         if (!account) {
-          // All accounts exhausted
-          await db.from('send_logs').update({
-            status: 'failed',
-            error_message: 'All sending accounts reached daily limit',
-          }).eq('id', log.id);
-          failCount++;
-          emit('progress', {
-            sent: sentCount, failed: failCount, total,
-            pct: Math.round(((sentCount + failCount) / total) * 100),
+          // Daily limits exhausted — pause campaign, remaining contacts stay queued for tomorrow
+          await db.from('campaigns').update({
+            status: 'paused',
+            sent_count: sentCount,
+          }).eq('id', campaign_id);
+          emit('done', {
+            success: true, sent: sentCount, failed: failCount, total,
+            paused: true,
+            message: `Daily sending limit reached. ${total - sentCount - failCount} contacts queued for tomorrow.`,
           });
-          continue;
+          done();
+          return;
         }
 
         const vars: Record<string, string> = {
@@ -277,7 +278,7 @@ export async function POST(req: NextRequest) {
       }
 
       // Finalize
-      const finalStatus = sentCount > 0 ? 'sent' : 'failed';
+      const finalStatus = failCount === total ? 'failed' : 'sent';
       await db.from('campaigns').update({
         status: finalStatus,
         sent_at: new Date().toISOString(),
