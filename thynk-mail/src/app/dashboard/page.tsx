@@ -34,16 +34,18 @@ async function getDashboardData(teamId: string) {
 
   // ── 3. SINGLE send_logs fetch — source of truth for ALL email metrics ──────
   // Scoped to THIS team's accounts + current year + must have been sent (not queued/failed)
-  const { data: yearLogs } = teamAccountIds.length > 0
+  // Fetch ALL send logs for this team — use created_at for date scoping
+  // so Brevo-synced events (opened/bounced) are always included even without sent_at
+  const { data: allLogs } = teamAccountIds.length > 0
     ? await db
         .from('send_logs')
-        .select('id, status, sent_at, account_id, campaign_id')
+        .select('id, status, sent_at, created_at, account_id, campaign_id')
         .in('account_id', teamAccountIds)
-        .gte('sent_at', startOfYear)
-        .not('sent_at', 'is', null)
+        .gte('created_at', startOfYear)
+        .not('status', 'eq', 'queued')
     : { data: [] };
 
-  const logs = yearLogs ?? [];
+  const logs = allLogs ?? [];
 
   // ── 4. Compute all metrics from the ONE fetch ──────────────────────────────
   let totalSent = 0, totalOpened = 0, totalClicked = 0, totalBounced = 0, totalFailed = 0;
@@ -52,7 +54,7 @@ async function getDashboardData(teamId: string) {
   const campaignLogMap: Record<string, { sent: number; opened: number; clicked: number; bounced: number }> = {};
 
   for (const log of logs) {
-    const sentAt   = log.sent_at as string;
+    const sentAt   = ((log.sent_at ?? log.created_at) ?? '') as string;
     const isMonth  = sentAt >= startOfMonth;
     const isSent   = ['sent', 'delivered', 'opened', 'clicked'].includes(log.status);
     const isOpened = log.status === 'opened' || log.status === 'clicked';
