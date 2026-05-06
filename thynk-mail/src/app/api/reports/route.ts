@@ -70,14 +70,15 @@ export async function GET(req: NextRequest) {
   const teamAccountIds  = allAccounts.map(a => a.id);
 
   // ── ONE send_logs fetch — source of truth for every number ──
+  // Use created_at for date filtering so Brevo-synced events (which may lack sent_at) are included
   const { data: allLogs } = teamAccountIds.length > 0
     ? await db
         .from('send_logs')
-        .select('status, sent_at, account_id, campaign_id')
+        .select('status, sent_at, created_at, account_id, campaign_id')
         .in('account_id', teamAccountIds)
-        .gte('sent_at', sinceISO)
-        .lte('sent_at', untilISO)
-        .not('sent_at', 'is', null)
+        .gte('created_at', sinceISO)
+        .lte('created_at', untilISO)
+        .not('status', 'eq', 'queued')
     : { data: [] };
 
   const logs = allLogs ?? [];
@@ -99,7 +100,7 @@ export async function GET(req: NextRequest) {
   // ── Daily aggregation ──
   const dailyMap: Record<string, { sent: number; delivered: number; opened: number; clicked: number; bounced: number; failed: number }> = {};
   for (const log of logs) {
-    const day = (log.sent_at as string).slice(0, 10);
+    const day = ((log.sent_at ?? log.created_at) as string).slice(0, 10);
     if (!dailyMap[day]) dailyMap[day] = { sent: 0, delivered: 0, opened: 0, clicked: 0, bounced: 0, failed: 0 };
     if (isSent(log.status))               dailyMap[day].sent++;
     if (log.status === 'delivered')       dailyMap[day].delivered++;
