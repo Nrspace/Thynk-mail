@@ -95,8 +95,6 @@ export default function CampaignForm({ mode, campaignId, initial }: Props) {
   function validate(): string {
     if (!form.name.trim())            return 'Campaign name is required';
     if (!form.subject.trim())         return 'Subject line is required';
-    if (!form.from_name.trim())       return 'From name is required';
-    if (!form.from_email.trim())      return 'From email is required';
     if (form.account_ids.length === 0) return 'Please select at least one sending account';
     if (form.list_ids.length === 0)   return 'Please select at least one recipient list';
     if (!form.html_body.trim())       return 'Email body cannot be empty';
@@ -217,22 +215,11 @@ export default function CampaignForm({ mode, campaignId, initial }: Props) {
             <input className="input" placeholder="Your email subject"
               value={form.subject} onChange={e => set('subject', e.target.value)} />
           </div>
-          <div className="grid grid-cols-2 gap-4">
-            <div>
-              <label className="block text-sm font-medium text-gray-700 mb-1">From Name</label>
-              <input className="input" placeholder="Your Name"
-                value={form.from_name} onChange={e => set('from_name', e.target.value)} />
-            </div>
-            <div>
-              <label className="block text-sm font-medium text-gray-700 mb-1">From Email</label>
-              <input className="input" placeholder="you@domain.com"
-                value={form.from_email} onChange={e => set('from_email', e.target.value)} />
-            </div>
-          </div>
           <div>
-            <label className="block text-sm font-medium text-gray-700 mb-1">Reply-To (optional)</label>
-            <input className="input" placeholder="replies@domain.com"
+            <label className="block text-sm font-medium text-gray-700 mb-1">Reply-To Email</label>
+            <input className="input" placeholder="replies@yourdomain.com — all replies will go here"
               value={form.reply_to} onChange={e => set('reply_to', e.target.value)} />
+            <p className="text-xs text-gray-400 mt-1">All email replies will be sent to this address. From name &amp; email are taken from each sending account.</p>
           </div>
         </div>
 
