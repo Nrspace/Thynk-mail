@@ -24,7 +24,7 @@ export async function POST(req: NextRequest) {
     list_ids, status, scheduled_at,
   } = body;
 
-  if (!name || !subject || !from_name || !from_email) {
+  if (!name || !subject) {
     return NextResponse.json({ error: 'Missing required fields' }, { status: 400 });
   }
 
