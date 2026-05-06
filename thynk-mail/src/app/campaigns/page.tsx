@@ -46,7 +46,7 @@ export default async function CampaignsPage() {
       .from('send_logs')
       .select('campaign_id, status')
       .in('campaign_id', campaignIds)
-      .not('sent_at', 'is', null);
+      .not('status', 'eq', 'queued'); // include Brevo-synced opens/bounces even without sent_at
 
     for (const l of (logRows ?? [])) {
       if (!logCountMap[l.campaign_id]) {
