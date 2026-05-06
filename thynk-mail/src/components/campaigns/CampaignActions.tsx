@@ -80,15 +80,18 @@ export default function CampaignActions({ campaign }: { campaign: Campaign }) {
               message: `Sent ${data.sent} of ${data.total}${data.failed ? ` · ${data.failed} failed` : ''}`,
             });
           } else if (ev === 'done') {
+            const msg = data.paused
+              ? `Daily limit reached — ${data.sent} sent. Remaining contacts queued for tomorrow.`
+              : `Done — ${data.sent} sent${data.failed ? `, ${data.failed} failed` : ''}`;
             setSendState({
               phase: 'done',
               sent: data.sent, failed: data.failed, total: data.total, pct: 100,
-              message: `Done — ${data.sent} sent, ${data.failed} failed`,
+              message: msg,
             });
             setTimeout(() => {
               setSendState(s => ({ ...s, phase: 'idle' }));
               router.refresh();
-            }, 3000);
+            }, 4000);
           } else if (ev === 'error') {
             setSendState(s => ({ ...s, phase: 'error', message: data.error ?? 'Unknown error' }));
           }
@@ -142,9 +145,11 @@ export default function CampaignActions({ campaign }: { campaign: Campaign }) {
             setSendState({ phase: 'sending', sent: data.sent, failed: data.failed, total: data.total, pct: data.pct,
               message: `Sent ${data.sent} of ${data.total}${data.failed ? ` · ${data.failed} failed` : ''}` });
           } else if (ev === 'done') {
-            setSendState({ phase: 'done', sent: data.sent, failed: data.failed, total: data.total, pct: 100,
-              message: `Done — ${data.sent} sent, ${data.failed} failed` });
-            setTimeout(() => { setSendState(s => ({ ...s, phase: 'idle' })); router.refresh(); }, 3000);
+            const msg2 = data.paused
+              ? `Daily limit reached — ${data.sent} sent. Remaining contacts queued for tomorrow.`
+              : `Done — ${data.sent} sent${data.failed ? `, ${data.failed} failed` : ''}`;
+            setSendState({ phase: 'done', sent: data.sent, failed: data.failed, total: data.total, pct: 100, message: msg2 });
+            setTimeout(() => { setSendState(s => ({ ...s, phase: 'idle' })); router.refresh(); }, 4000);
           } else if (ev === 'error') {
             setSendState(s => ({ ...s, phase: 'error', message: data.error ?? 'Unknown error' }));
           }
