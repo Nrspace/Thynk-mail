@@ -102,6 +102,59 @@ export default function CampaignActions({ campaign }: { campaign: Campaign }) {
     }
   }
 
+  async function handleResume() {
+    if (!confirm(`Resume sending "${campaign.name}"?`)) return;
+    setOpen(false);
+    // Resume = re-trigger the send queue (it will skip already-sent contacts)
+    setSendState({ phase: 'sending', sent: 0, failed: 0, total: 0, pct: 0, message: 'Resuming…' });
+
+    try {
+      const res = await fetch('/api/send/queue', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ campaign_id: campaign.id }),
+      });
+
+      if (!res.ok || !res.body) {
+        const text = await res.text().catch(() => `HTTP ${res.status}`);
+        setSendState(s => ({ ...s, phase: 'error', message: text.slice(0, 200) }));
+        return;
+      }
+
+      const reader = res.body.getReader();
+      const dec = new TextDecoder();
+      let buf = '';
+
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        buf += dec.decode(value, { stream: true });
+        const parts = buf.split('\n\n');
+        buf = parts.pop() ?? '';
+        for (const part of parts) {
+          const evMatch = part.match(/^event: (\w+)/m);
+          const dataMatch = part.match(/^data: (.+)$/m);
+          if (!evMatch || !dataMatch) continue;
+          let data: any;
+          try { data = JSON.parse(dataMatch[1]); } catch { continue; }
+          const ev = evMatch[1];
+          if (ev === 'progress') {
+            setSendState({ phase: 'sending', sent: data.sent, failed: data.failed, total: data.total, pct: data.pct,
+              message: `Sent ${data.sent} of ${data.total}${data.failed ? ` · ${data.failed} failed` : ''}` });
+          } else if (ev === 'done') {
+            setSendState({ phase: 'done', sent: data.sent, failed: data.failed, total: data.total, pct: 100,
+              message: `Done — ${data.sent} sent, ${data.failed} failed` });
+            setTimeout(() => { setSendState(s => ({ ...s, phase: 'idle' })); router.refresh(); }, 3000);
+          } else if (ev === 'error') {
+            setSendState(s => ({ ...s, phase: 'error', message: data.error ?? 'Unknown error' }));
+          }
+        }
+      }
+    } catch (e: unknown) {
+      setSendState(s => ({ ...s, phase: 'error', message: e instanceof Error ? e.message : 'Network error' }));
+    }
+  }
+
   async function handleStatusChange(newStatus: string, label: string) {
     if (!confirm(`${label} "${campaign.name}"?`)) return;
     setOpen(false);
@@ -253,7 +306,7 @@ export default function CampaignActions({ campaign }: { campaign: Campaign }) {
           </button>
         )}
         {canResume && (
-          <button onClick={() => handleStatusChange('sending', 'Resume')} disabled={actioning}
+          <button onClick={handleResume} disabled={actioning}
             className="p-1.5 rounded text-gray-400 hover:text-green-600 hover:bg-green-50 transition-colors" title="Resume sending">
             {actioning ? <Loader2 size={14} className="animate-spin" /> : <Play size={14} />}
           </button>
@@ -293,7 +346,7 @@ export default function CampaignActions({ campaign }: { campaign: Campaign }) {
                   </button>
                 )}
                 {canResume && (
-                  <button onClick={() => handleStatusChange('sending', 'Resume')} disabled={actioning}
+                  <button onClick={handleResume} disabled={actioning}
                     className="w-full flex items-center gap-2.5 px-4 py-2 text-sm text-green-600 hover:bg-green-50">
                     <Play size={13} /> Resume sending
                   </button>
