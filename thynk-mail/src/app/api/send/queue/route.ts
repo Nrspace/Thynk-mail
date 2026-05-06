@@ -202,6 +202,7 @@ export async function POST(req: NextRequest) {
       emit('progress', { sent: sentCount, failed: 0, total, pct: Math.round((sentCount / total) * 100) });
 
       // ── Send loop with multi-account rotation ────────────────────────────
+      let consecutiveFails = 0;
 
       for (const log of logs ?? []) {
         const contact = eligible.find((c: Contact) => c.id === log.contact_id);
@@ -233,6 +234,8 @@ export async function POST(req: NextRequest) {
 
         const html   = buildFinalHtml(campaign.html_body, log.id, APP_URL, vars);
         const unsub  = `${APP_URL}/unsubscribe?id=${log.id}`;
+        // from_name and from_email come from the sending account itself
+        // so multi-account sends always use a valid authenticated sender
         const result = await sendEmail({
           account:   account as EmailAccount,
           to:        contact.email,
@@ -240,14 +243,15 @@ export async function POST(req: NextRequest) {
           subject:   campaign.subject,
           html,
           text:      campaign.text_body ?? '',
-          fromName:  campaign.from_name,
-          fromEmail: campaign.from_email,
+          fromName:  account.name || account.email,
+          fromEmail: account.email,
           replyTo:   campaign.reply_to ?? undefined,
           headers:   { 'List-Unsubscribe': `<${unsub}>` },
         });
 
         if (result.success) {
           sentCount++;
+          consecutiveFails = 0;
           rotator.recordSent(account.id);
           const newSentToday = rotator.getSentToday(account.id);
           await db.from('send_logs').update({
@@ -256,22 +260,42 @@ export async function POST(req: NextRequest) {
             message_id: result.messageId ?? null,
             sent_at: new Date().toISOString(),
           }).eq('id', log.id);
-          // Update account sent_today counter
           await db.from('email_accounts')
             .update({ sent_today: newSentToday })
             .eq('id', account.id);
         } else {
           failCount++;
+          consecutiveFails++;
+          const errMsg = result.error ?? 'Unknown error';
           await db.from('send_logs').update({
             status: 'failed',
             account_id: account.id,
-            error_message: result.error ?? 'Unknown error',
+            error_message: errMsg,
           }).eq('id', log.id);
+
+          // Emit the actual error so the UI shows it
+          emit('warn', { error: errMsg, to: contact.email });
+
+          // If 5+ consecutive failures, something is systemically wrong — pause
+          if (consecutiveFails >= 5) {
+            await db.from('campaigns').update({
+              status: 'paused',
+              sent_count: sentCount,
+            }).eq('id', campaign_id);
+            emit('done', {
+              success: false, sent: sentCount, failed: failCount, total,
+              paused: true,
+              message: `Paused after ${consecutiveFails} consecutive failures. Last error: ${errMsg}`,
+            });
+            done();
+            return;
+          }
         }
 
         emit('progress', {
           sent: sentCount, failed: failCount, total,
           pct: Math.round(((sentCount + failCount) / total) * 100),
+          lastError: result.success ? undefined : result.error,
         });
 
         await sleep(RATE_DELAY_MS);
