@@ -90,8 +90,8 @@ async function getDashboardData(teamId: string) {
   }));
 
   // ── 5. Recent campaigns — joined with live send_logs counts ───────────────
-  // NO more cached sent_count columns — always use send_logs so it matches
-  // the Campaigns page and Reports page exactly.
+  // Fetch campaigns first, then count send_logs by campaign_id (NO account filter)
+  // This exactly mirrors the Campaigns page logic so numbers always match.
   const { data: recentRows } = await db
     .from('campaigns')
     .select('id, name, status, created_at, sent_at')
@@ -99,12 +99,34 @@ async function getDashboardData(teamId: string) {
     .order('created_at', { ascending: false })
     .limit(7);
 
+  const recentIds = (recentRows ?? []).map((c: any) => c.id);
+  const campaignStatsMap: Record<string, { sent: number; opened: number; clicked: number; bounced: number }> = {};
+
+  if (recentIds.length > 0) {
+    const { data: campaignLogs } = await db
+      .from('send_logs')
+      .select('campaign_id, status')
+      .in('campaign_id', recentIds)
+      .not('status', 'eq', 'queued');
+
+    for (const l of (campaignLogs ?? [])) {
+      if (!campaignStatsMap[l.campaign_id]) {
+        campaignStatsMap[l.campaign_id] = { sent: 0, opened: 0, clicked: 0, bounced: 0 };
+      }
+      const s = l.status;
+      if (['sent', 'delivered', 'opened', 'clicked'].includes(s)) campaignStatsMap[l.campaign_id].sent++;
+      if (s === 'opened' || s === 'clicked') campaignStatsMap[l.campaign_id].opened++;
+      if (s === 'clicked') campaignStatsMap[l.campaign_id].clicked++;
+      if (s === 'bounced') campaignStatsMap[l.campaign_id].bounced++;
+    }
+  }
+
   const recentCampaigns = (recentRows ?? []).map((c: any) => ({
     ...c,
-    sent_count:   campaignLogMap[c.id]?.sent    ?? 0,
-    open_count:   campaignLogMap[c.id]?.opened  ?? 0,
-    click_count:  campaignLogMap[c.id]?.clicked ?? 0,
-    bounce_count: campaignLogMap[c.id]?.bounced ?? 0,
+    sent_count:   campaignStatsMap[c.id]?.sent    ?? 0,
+    open_count:   campaignStatsMap[c.id]?.opened  ?? 0,
+    click_count:  campaignStatsMap[c.id]?.clicked ?? 0,
+    bounce_count: campaignStatsMap[c.id]?.bounced ?? 0,
   }));
 
   return {
