@@ -6,7 +6,7 @@ import type { EmailAccount, Contact } from '@/types';
 
 export const maxDuration = 300;
 
-const RATE_DELAY_MS = 1200;
+const RATE_DELAY_MS = 400; // 400ms × 185 contacts = 74s of delays; leaves plenty of room for SMTP time
 const sleep = (ms: number) => new Promise(r => setTimeout(r, ms));
 
 function makeStream() {
@@ -163,24 +163,45 @@ export async function POST(req: NextRequest) {
       const eligible = (contacts ?? []).filter((c: Contact) => !suppressed.has(c.email));
       if (!eligible.length) return fail('All contacts are suppressed or unsubscribed');
 
-      emit('progress', { sent: 0, failed: 0, total: eligible.length, pct: 0 });
-
-      // Create send logs (bulk) — account_id will be set per-email during sending
-      const logRows = eligible.map((c: Contact) => ({
-        campaign_id, contact_id: c.id,
-        account_id: rawAccountIds[0], // placeholder, updated per send
-        status: 'queued',
-      }));
-      const { data: logs, error: logsErr } = await db
-        .from('send_logs').insert(logRows).select('id, contact_id');
-      if (logsErr) return fail(`Failed to create send logs: ${logsErr.message}`);
-
       await db.from('campaigns').update({ total_recipients: eligible.length }).eq('id', campaign_id);
 
-      // ── Send loop with multi-account rotation ────────────────────────────
-      let sentCount = 0;
+      // Load existing logs — skip already-sent contacts (safe resume/retry, no duplicates)
+      const { data: existingLogs } = await db
+        .from('send_logs')
+        .select('id, contact_id, status')
+        .eq('campaign_id', campaign_id);
+
+      const alreadySentIds = new Set(
+        (existingLogs ?? [])
+          .filter((l: any) => l.status === 'sent')
+          .map((l: any) => l.contact_id)
+      );
+      const existingLogMap = new Map(
+        (existingLogs ?? []).map((l: any) => [l.contact_id, l])
+      );
+
+      // Only create logs for contacts that don't have one yet
+      const needsLog = eligible.filter((c: Contact) => !existingLogMap.has(c.id));
+      let logs: any[] = (existingLogs ?? []).filter((l: any) => l.status !== 'sent');
+      if (needsLog.length > 0) {
+        const logRows = needsLog.map((c: Contact) => ({
+          campaign_id, contact_id: c.id,
+          account_id: rawAccountIds[0],
+          status: 'queued',
+        }));
+        const { data: newLogs, error: logsErr } = await db
+          .from('send_logs').insert(logRows).select('id, contact_id, status');
+        if (logsErr) return fail(`Failed to create send logs: ${logsErr.message}`);
+        logs = [...logs, ...(newLogs ?? [])];
+      }
+
+      // Resume support: start sentCount from already-sent emails
+      let sentCount = alreadySentIds.size;
       let failCount = 0;
       const total = eligible.length;
+      emit('progress', { sent: sentCount, failed: 0, total, pct: Math.round((sentCount / total) * 100) });
+
+      // ── Send loop with multi-account rotation ────────────────────────────
 
       for (const log of logs ?? []) {
         const contact = eligible.find((c: Contact) => c.id === log.contact_id);
