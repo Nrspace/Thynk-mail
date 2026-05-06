@@ -19,6 +19,7 @@ interface SendState {
   phase: 'idle' | 'sending' | 'done' | 'error';
   sent: number; failed: number; total: number; pct: number;
   message: string;
+  lastError?: string;
 }
 
 export default function CampaignActions({ campaign }: { campaign: Campaign }) {
@@ -92,6 +93,8 @@ export default function CampaignActions({ campaign }: { campaign: Campaign }) {
               setSendState(s => ({ ...s, phase: 'idle' }));
               router.refresh();
             }, 4000);
+          } else if (ev === 'warn') {
+            setSendState(s => ({ ...s, lastError: `Last error: ${data.error}` }));
           } else if (ev === 'error') {
             setSendState(s => ({ ...s, phase: 'error', message: data.error ?? 'Unknown error' }));
           }
@@ -150,6 +153,8 @@ export default function CampaignActions({ campaign }: { campaign: Campaign }) {
               : `Done — ${data.sent} sent${data.failed ? `, ${data.failed} failed` : ''}`;
             setSendState({ phase: 'done', sent: data.sent, failed: data.failed, total: data.total, pct: 100, message: msg2 });
             setTimeout(() => { setSendState(s => ({ ...s, phase: 'idle' })); router.refresh(); }, 4000);
+          } else if (ev === 'warn') {
+            setSendState(s => ({ ...s, lastError: `Last error: ${data.error}` }));
           } else if (ev === 'error') {
             setSendState(s => ({ ...s, phase: 'error', message: data.error ?? 'Unknown error' }));
           }
@@ -262,6 +267,11 @@ export default function CampaignActions({ campaign }: { campaign: Campaign }) {
                       <span>✗ <b style={{ color: '#ef4444' }}>{sendState.failed}</b> failed</span>
                     )}
                     <span style={{ marginLeft: 'auto' }}>{sendState.total} total</span>
+                  </div>
+                )}
+                {sendState.lastError && sendState.phase === 'sending' && (
+                  <div className="mt-1 rounded px-2 py-1 text-xs bg-red-50 text-red-600 border border-red-100 truncate" title={sendState.lastError}>
+                    {sendState.lastError}
                   </div>
                 )}
               </div>
