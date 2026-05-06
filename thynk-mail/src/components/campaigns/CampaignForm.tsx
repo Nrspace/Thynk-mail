@@ -154,10 +154,6 @@ export default function CampaignForm({ mode, campaignId, initial }: Props) {
       if (campaign.error) { setSendError(campaign.error); setSending(false); return; }
       const cid = campaign.id ?? campaignId;
 
-      // Redirect immediately to campaigns list so user can see it running
-      router.push('/campaigns');
-      router.refresh();
-
       // Fire queue in background (don't block UI)
       fetch('/api/send/queue', {
         method: 'POST',
@@ -189,7 +185,7 @@ export default function CampaignForm({ mode, campaignId, initial }: Props) {
         <div className="mb-6 bg-green-50 border border-green-200 rounded-xl px-5 py-4 flex items-center gap-3">
           <CheckCircle size={20} className="text-green-600 shrink-0" />
           <div>
-            <p className="font-semibold text-green-800">Campaign queued! Redirecting to campaigns…</p>
+            <p className="font-semibold text-green-800">Campaign is sending! Check the <a href="/campaigns" className="underline">Campaigns page</a> to monitor progress.</p>
           </div>
         </div>
       )}
