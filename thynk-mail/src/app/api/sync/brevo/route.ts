@@ -20,13 +20,19 @@ function decryptKey(encrypted: string): string {
 const EVENT_MAP: Record<string, string> = {
   delivered:    'delivered',
   opened:       'opened',
+  open:         'opened',   // Brevo uses both forms
   clicks:       'clicked',
+  click:        'clicked',  // Brevo uses both forms
   hardBounces:  'bounced',
+  hardBounce:   'bounced',
   softBounces:  'bounced',
+  softBounce:   'bounced',
   blocked:      'bounced',
   invalid:      'bounced',
   complaint:    'bounced',
+  spam:         'bounced',
   unsubscribed: 'unsubscribed',
+  unsubscribe:  'unsubscribed',
 };
 
 // Status upgrade priority — only move forward, never back
@@ -128,47 +134,43 @@ export async function POST(req: NextRequest) {
     try {
       const events = await fetchBrevoEvents(apiKey, since, until);
 
-      // Build a map: normalised messageId → best status seen
-      const bestStatus: Record<string, { status: string; date: string }> = {};
+      // Build a map: email → best status seen
+      // Brevo messageId != nodemailer messageId, so match by recipient email instead
+      const bestByEmail: Record<string, { status: string; date: string }> = {};
 
       for (const ev of events) {
-        if (!ev.messageId) continue;
+        if (!ev.email) continue;
         const ourStatus = EVENT_MAP[ev.event];
         if (!ourStatus) continue;
 
-        // Normalise: strip angle brackets that Brevo sometimes includes
-        const msgId = ev.messageId.replace(/^<|>$/g, '');
-        const existing = bestStatus[msgId];
+        const email = ev.email.toLowerCase().trim();
+        const existing = bestByEmail[email];
         if (!existing || isUpgrade(existing.status, ourStatus)) {
-          bestStatus[msgId] = { status: ourStatus, date: ev.date };
+          bestByEmail[email] = { status: ourStatus, date: ev.date };
         }
       }
 
-      const messageIds = Object.keys(bestStatus);
-      if (messageIds.length === 0) {
+      const emailList = Object.keys(bestByEmail);
+      if (emailList.length === 0) {
         results.push({ account: account.name, events: events.length, updated: 0 });
         continue;
       }
 
-      // Fetch matching send_logs — include campaign_id for counter update
+      // Fetch send_logs for this account joined with contact emails
       const { data: logs } = await db
         .from('send_logs')
-        .select('id, status, message_id, campaign_id')  // ← campaign_id included
+        .select('id, status, campaign_id, contacts(email)')
         .eq('account_id', account.id)
-        .in('message_id', [
-          ...messageIds,
-          ...messageIds.map(m => `<${m}>`),
-        ]);
+        .in('status', ['sent', 'delivered', 'opened', 'clicked']);
 
       let updatedCount = 0;
       const affectedCampaigns = new Set<string>();
 
       for (const log of (logs ?? [])) {
-        if (!log.message_id) continue;
+        const contactEmail = (log.contacts as any)?.email?.toLowerCase().trim();
+        if (!contactEmail) continue;
 
-        // Try both bracketed and unbracketed forms
-        const normalised = log.message_id.replace(/^<|>$/g, '');
-        const match = bestStatus[normalised] ?? bestStatus[`<${normalised}>`];
+        const match = bestByEmail[contactEmail];
         if (!match) continue;
         if (!isUpgrade(log.status, match.status)) continue;
 
