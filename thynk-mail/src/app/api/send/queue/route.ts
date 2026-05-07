@@ -1,3 +1,4 @@
+export const dynamic = 'force-dynamic';
 import { NextRequest } from 'next/server';
 import { createServerClient } from '@/lib/supabase';
 import { sendEmail } from '@/lib/smtp-router';
