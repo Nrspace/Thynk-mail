@@ -1,3 +1,12 @@
 {
-  "framework": "nextjs"
+  "rootDirectory": "thynk-mail",
+  "framework": "nextjs",
+  "functions": {
+    "src/app/api/send/queue/route.ts": {
+      "maxDuration": 300
+    },
+    "src/app/api/send/now/route.ts": {
+      "maxDuration": 60
+    }
+  }
 }
