@@ -274,7 +274,7 @@ export default function AccountsPage() {
 
   const tip = PROVIDER_TIPS[form.provider];
   const meta = PROVIDER_META[form.provider];
-  const needsCustomHost = form.provider === 'smtp';
+  const needsCustomHost = form.provider === 'smtp' || form.provider === 'zoho';
   const isBrevo = form.provider === 'brevo';
   const brevoAccounts = accounts.filter(a => a.provider === 'brevo');
   const brevoWithKey = brevoAccounts.filter(a => a.has_api_key);
@@ -283,7 +283,7 @@ export default function AccountsPage() {
   const editMeta   = editAccount ? PROVIDER_META[editAccount.provider] : null;
   const editTip    = editAccount ? PROVIDER_TIPS[editAccount.provider] : null;
   const editIsBrevo = editAccount?.provider === 'brevo';
-  const editNeedsCustomHost = editAccount?.provider === 'smtp';
+  const editNeedsCustomHost = editAccount?.provider === 'smtp' || editAccount?.provider === 'zoho';
 
   return (
     <div className="p-8">
