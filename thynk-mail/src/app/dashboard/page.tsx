@@ -90,8 +90,8 @@ async function getDashboardData(teamId: string) {
   }));
 
   // ── 5. Recent campaigns — joined with live send_logs counts ───────────────
-  // Fetch campaigns first, then count send_logs by campaign_id (NO account filter)
-  // This exactly mirrors the Campaigns page logic so numbers always match.
+  // Fetch campaigns first, then count send_logs by campaign_id (NO account filter, NO date filter)
+  // This exactly mirrors the Campaigns page logic so numbers always match across all pages.
   const { data: recentRows } = await db
     .from('campaigns')
     .select('id, name, status, created_at, sent_at')
@@ -103,6 +103,9 @@ async function getDashboardData(teamId: string) {
   const campaignStatsMap: Record<string, { sent: number; opened: number; clicked: number; bounced: number }> = {};
 
   if (recentIds.length > 0) {
+    // NOTE: NO account filter here — must match Campaigns page which also has no account filter.
+    // The account-scoped logs (used for YTD totals above) can differ because Brevo-synced
+    // open/bounce events may arrive under a different account_id or with null account_id.
     const { data: campaignLogs } = await db
       .from('send_logs')
       .select('campaign_id, status')
