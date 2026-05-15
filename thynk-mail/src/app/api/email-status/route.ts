@@ -57,6 +57,17 @@ export async function GET(req: NextRequest) {
   if (campaignId) query = query.eq('campaign_id', campaignId);
   if (status) query = query.eq('status', status);
 
+  // summary_only=1: return just the status counts for the full result set (no pagination)
+  const summaryOnly = searchParams.get('summary_only') === '1';
+  if (summaryOnly) {
+    const { data: allStatuses } = await query.select('status');
+    const summary: Record<string, number> = {};
+    for (const row of (allStatuses ?? [])) {
+      summary[row.status] = (summary[row.status] ?? 0) + 1;
+    }
+    return NextResponse.json({ summary });
+  }
+
   const { data: logs, count } = await query
     .order('created_at', { ascending: false })
     .range(offset, offset + limit - 1);
