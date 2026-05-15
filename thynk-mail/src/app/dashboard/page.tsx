@@ -7,10 +7,9 @@ import DashboardCharts from '@/components/dashboard/DashboardCharts';
 async function getDashboardData(teamId: string) {
   const db = createServerClient();
 
-  // Use UTC-safe year/month boundaries
-  const now         = new Date();
-  const startOfYear = new Date(Date.UTC(now.getUTCFullYear(), 0, 1)).toISOString();
-  const startOfMonth= new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), 1)).toISOString();
+  const now          = new Date();
+  const startOfYear  = new Date(Date.UTC(now.getUTCFullYear(), 0, 1)).toISOString();
+  const startOfMonth = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), 1)).toISOString();
 
   // ── 1. Email accounts ──────────────────────────────────────────────────────
   const { data: accountRows } = await db
@@ -21,7 +20,7 @@ async function getDashboardData(teamId: string) {
   const accounts       = accountRows ?? [];
   const teamAccountIds = accounts.map((a: any) => a.id);
 
-  // ── 2. Counts: campaigns + ALL contacts (not just subscribed) ──────────────
+  // ── 2. Counts: campaigns + contacts ───────────────────────────────────────
   const [
     { data: allCampaignsData, count: campaignCount },
     { count: totalContacts },
@@ -32,55 +31,47 @@ async function getDashboardData(teamId: string) {
     db.from('contacts').select('id', { count: 'exact' }).eq('team_id', teamId).eq('is_subscribed', true),
   ]);
 
-  // ── 3. SINGLE send_logs fetch — source of truth for ALL email metrics ──────
-  // Scoped to THIS team's accounts + current year + must have been sent (not queued/failed)
-  // Fetch ALL send logs for this team — use created_at for date scoping
-  // so Brevo-synced events (opened/bounced) are always included even without sent_at
-  const { data: allLogs } = teamAccountIds.length > 0
-    ? await db
-        .from('send_logs')
-        .select('id, status, sent_at, created_at, account_id, campaign_id')
-        .in('account_id', teamAccountIds)
-        .gte('created_at', startOfYear)
-        .not('status', 'eq', 'queued')
-    : { data: [] };
-
-  const logs = allLogs ?? [];
-
-  // ── 4. Compute all metrics from the ONE fetch ──────────────────────────────
+  // ── 3. YTD totals — account-scoped send_logs for this team ────────────────
+  // Used ONLY for the top stat cards (Sent Year, Open Rate, etc.) and month strip.
+  // Paginated to avoid the Supabase 1000-row default cap.
   let totalSent = 0, totalOpened = 0, totalClicked = 0, totalBounced = 0, totalFailed = 0;
   let monthSent = 0, monthOpened = 0;
   const accountSentMap: Record<string, number> = {};
-  const campaignLogMap: Record<string, { sent: number; opened: number; clicked: number; bounced: number }> = {};
 
-  for (const log of logs) {
-    const sentAt   = ((log.sent_at ?? log.created_at) ?? '') as string;
-    const isMonth  = sentAt >= startOfMonth;
-    const isSent   = ['sent', 'delivered', 'opened', 'clicked'].includes(log.status);
-    const isOpened = log.status === 'opened' || log.status === 'clicked';
-    const isClick  = log.status === 'clicked';
-    const isBounce = log.status === 'bounced';
-    const isFail   = log.status === 'failed';
+  if (teamAccountIds.length > 0) {
+    let ytdPage = 0;
+    const pageSize = 1000;
+    while (true) {
+      const { data: batch } = await db
+        .from('send_logs')
+        .select('status, sent_at, created_at, account_id')
+        .in('account_id', teamAccountIds)
+        .gte('created_at', startOfYear)
+        .not('status', 'eq', 'queued')
+        .range(ytdPage * pageSize, (ytdPage + 1) * pageSize - 1);
 
-    if (isSent)   { totalSent++;    if (isMonth) monthSent++;    }
-    if (isOpened) { totalOpened++;  if (isMonth) monthOpened++;  }
-    if (isClick)    totalClicked++;
-    if (isBounce)   totalBounced++;
-    if (isFail)     totalFailed++;
+      const rows = batch ?? [];
+      for (const log of rows) {
+        const sentAt   = ((log.sent_at ?? log.created_at) ?? '') as string;
+        const isMonth  = sentAt >= startOfMonth;
+        const isSent   = ['sent', 'delivered', 'opened', 'clicked'].includes(log.status);
+        const isOpened = log.status === 'opened' || log.status === 'clicked';
+        const isClick  = log.status === 'clicked';
+        const isBounce = log.status === 'bounced';
+        const isFail   = log.status === 'failed';
 
-    // Per-account totals (for the Email Accounts widget)
-    if (isSent && log.account_id) {
-      accountSentMap[log.account_id] = (accountSentMap[log.account_id] ?? 0) + 1;
-    }
+        if (isSent)   { totalSent++;   if (isMonth) monthSent++;   }
+        if (isOpened) { totalOpened++; if (isMonth) monthOpened++; }
+        if (isClick)    totalClicked++;
+        if (isBounce)   totalBounced++;
+        if (isFail)     totalFailed++;
 
-    // Per-campaign totals — SAME logic as Reports API so numbers always match
-    const cid = log.campaign_id as string;
-    if (cid) {
-      if (!campaignLogMap[cid]) campaignLogMap[cid] = { sent: 0, opened: 0, clicked: 0, bounced: 0 };
-      if (isSent)   campaignLogMap[cid].sent++;
-      if (isOpened) campaignLogMap[cid].opened++;
-      if (isClick)  campaignLogMap[cid].clicked++;
-      if (isBounce) campaignLogMap[cid].bounced++;
+        if (isSent && log.account_id) {
+          accountSentMap[log.account_id] = (accountSentMap[log.account_id] ?? 0) + 1;
+        }
+      }
+      if (rows.length < pageSize) break;
+      ytdPage++;
     }
   }
 
@@ -89,9 +80,10 @@ async function getDashboardData(teamId: string) {
     total_sent: accountSentMap[a.id] ?? 0,
   }));
 
-  // ── 5. Recent campaigns — joined with live send_logs counts ───────────────
-  // Fetch campaigns first, then count send_logs by campaign_id (NO account filter, NO date filter)
-  // This exactly mirrors the Campaigns page logic so numbers always match across all pages.
+  // ── 4. Recent campaigns — EXACT same query as Campaigns page ──────────────
+  // Fetch 7 most recent campaigns, then fetch ALL their send_logs with NO
+  // account filter and NO date filter — identical to src/app/campaigns/page.tsx.
+  // Paginated to handle campaigns with >1000 send_log rows.
   const { data: recentRows } = await db
     .from('campaigns')
     .select('id, name, status, created_at, sent_at')
@@ -103,24 +95,29 @@ async function getDashboardData(teamId: string) {
   const campaignStatsMap: Record<string, { sent: number; opened: number; clicked: number; bounced: number }> = {};
 
   if (recentIds.length > 0) {
-    // NOTE: NO account filter here — must match Campaigns page which also has no account filter.
-    // The account-scoped logs (used for YTD totals above) can differ because Brevo-synced
-    // open/bounce events may arrive under a different account_id or with null account_id.
-    const { data: campaignLogs } = await db
-      .from('send_logs')
-      .select('campaign_id, status')
-      .in('campaign_id', recentIds)
-      .not('status', 'eq', 'queued');
+    let campPage = 0;
+    const pageSize = 1000;
+    while (true) {
+      const { data: batch } = await db
+        .from('send_logs')
+        .select('campaign_id, status')
+        .in('campaign_id', recentIds)
+        .not('status', 'eq', 'queued')
+        .range(campPage * pageSize, (campPage + 1) * pageSize - 1);
 
-    for (const l of (campaignLogs ?? [])) {
-      if (!campaignStatsMap[l.campaign_id]) {
-        campaignStatsMap[l.campaign_id] = { sent: 0, opened: 0, clicked: 0, bounced: 0 };
+      const rows = batch ?? [];
+      for (const l of rows) {
+        if (!campaignStatsMap[l.campaign_id]) {
+          campaignStatsMap[l.campaign_id] = { sent: 0, opened: 0, clicked: 0, bounced: 0 };
+        }
+        const s = l.status;
+        if (['sent', 'delivered', 'opened', 'clicked'].includes(s)) campaignStatsMap[l.campaign_id].sent++;
+        if (s === 'opened' || s === 'clicked') campaignStatsMap[l.campaign_id].opened++;
+        if (s === 'clicked') campaignStatsMap[l.campaign_id].clicked++;
+        if (s === 'bounced') campaignStatsMap[l.campaign_id].bounced++;
       }
-      const s = l.status;
-      if (['sent', 'delivered', 'opened', 'clicked'].includes(s)) campaignStatsMap[l.campaign_id].sent++;
-      if (s === 'opened' || s === 'clicked') campaignStatsMap[l.campaign_id].opened++;
-      if (s === 'clicked') campaignStatsMap[l.campaign_id].clicked++;
-      if (s === 'bounced') campaignStatsMap[l.campaign_id].bounced++;
+      if (rows.length < pageSize) break;
+      campPage++;
     }
   }
 
