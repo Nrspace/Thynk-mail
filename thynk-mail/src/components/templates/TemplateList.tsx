@@ -1,5 +1,5 @@
 'use client';
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import { useRouter } from 'next/navigation';
 import Link from 'next/link';
 import {
@@ -103,6 +103,14 @@ export default function TemplateList({ templates: initialTemplates }: { template
   const [preview, setPreview] = useState<Template | null>(null);
   const [deleting, setDeleting] = useState<string | null>(null);
   const [copying, setCopying] = useState<string | null>(null);
+
+  // Always fetch fresh from API on mount to bypass Vercel's edge cache
+  useEffect(() => {
+    fetch('/api/templates')
+      .then(r => r.json())
+      .then(d => { if (Array.isArray(d.data)) setItems(d.data); })
+      .catch(() => {});
+  }, []);
 
   async function handleDelete(t: Template) {
     if (!confirm(`Delete template "${t.name}"? This cannot be undone.`)) return;
