@@ -69,19 +69,25 @@ export async function GET(req: NextRequest) {
   const allAccounts     = teamAccounts ?? [];
   const teamAccountIds  = allAccounts.map(a => a.id);
 
-  // ── ONE send_logs fetch — source of truth for every number ──
-  // Use created_at for date filtering so Brevo-synced events (which may lack sent_at) are included
-  const { data: allLogs } = teamAccountIds.length > 0
-    ? await db
+  // ── ONE paginated send_logs fetch — avoids Supabase 1000-row cap ──
+  const logs: any[] = [];
+  if (teamAccountIds.length > 0) {
+    let pg = 0;
+    const pgSize = 1000;
+    while (true) {
+      const { data: batch } = await db
         .from('send_logs')
         .select('status, sent_at, created_at, account_id, campaign_id')
         .in('account_id', teamAccountIds)
         .gte('created_at', sinceISO)
         .lte('created_at', untilISO)
         .not('status', 'eq', 'queued')
-    : { data: [] };
-
-  const logs = allLogs ?? [];
+        .range(pg * pgSize, (pg + 1) * pgSize - 1);
+      logs.push(...(batch ?? []));
+      if ((batch ?? []).length < pgSize) break;
+      pg++;
+    }
+  }
 
   // ── Totals ──
   let totalSent = 0, totalOpened = 0, totalClicked = 0, totalBounced = 0, totalUnsubscribed = 0;
