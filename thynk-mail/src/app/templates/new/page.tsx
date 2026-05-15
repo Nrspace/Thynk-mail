@@ -359,8 +359,10 @@ export default function NewTemplatePage() {
         body: JSON.stringify({ ...form, html_body, variables }),
       });
       const data = await res.json();
-      if (data.id) router.push('/templates');
-      else alert(data.error ?? 'Failed to save');
+      if (data.id) {
+        router.refresh();
+        router.push('/templates');
+      } else alert(data.error ?? 'Failed to save');
     } finally { setSaving(false); }
   };
 
