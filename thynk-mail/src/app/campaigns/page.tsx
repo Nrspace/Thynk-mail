@@ -42,21 +42,29 @@ export default async function CampaignsPage() {
   const logCountMap: Record<string, { sent: number; opened: number; clicked: number; bounced: number }> = {};
 
   if (campaignIds.length > 0) {
-    const { data: logRows } = await db
-      .from('send_logs')
-      .select('campaign_id, status')
-      .in('campaign_id', campaignIds)
-      .not('status', 'eq', 'queued'); // include Brevo-synced opens/bounces even without sent_at
+    // Paginated fetch — avoid Supabase's 1000-row default cap
+    let pg = 0;
+    const pgSize = 1000;
+    while (true) {
+      const { data: batch } = await db
+        .from('send_logs')
+        .select('campaign_id, status')
+        .in('campaign_id', campaignIds)
+        .not('status', 'eq', 'queued')
+        .range(pg * pgSize, (pg + 1) * pgSize - 1);
 
-    for (const l of (logRows ?? [])) {
-      if (!logCountMap[l.campaign_id]) {
-        logCountMap[l.campaign_id] = { sent: 0, opened: 0, clicked: 0, bounced: 0 };
+      for (const l of (batch ?? [])) {
+        if (!logCountMap[l.campaign_id]) {
+          logCountMap[l.campaign_id] = { sent: 0, opened: 0, clicked: 0, bounced: 0 };
+        }
+        const s = l.status;
+        if (['sent', 'delivered', 'opened', 'clicked'].includes(s)) logCountMap[l.campaign_id].sent++;
+        if (s === 'opened' || s === 'clicked') logCountMap[l.campaign_id].opened++;
+        if (s === 'clicked')  logCountMap[l.campaign_id].clicked++;
+        if (s === 'bounced')  logCountMap[l.campaign_id].bounced++;
       }
-      const s = l.status;
-      if (['sent', 'delivered', 'opened', 'clicked'].includes(s)) logCountMap[l.campaign_id].sent++;
-      if (s === 'opened' || s === 'clicked') logCountMap[l.campaign_id].opened++;
-      if (s === 'clicked')  logCountMap[l.campaign_id].clicked++;
-      if (s === 'bounced')  logCountMap[l.campaign_id].bounced++;
+      if ((batch ?? []).length < pgSize) break;
+      pg++;
     }
   }
 
