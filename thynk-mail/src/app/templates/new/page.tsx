@@ -360,7 +360,6 @@ export default function NewTemplatePage() {
       });
       const data = await res.json();
       if (data.id) {
-        router.refresh();
         router.push('/templates');
       } else alert(data.error ?? 'Failed to save');
     } finally { setSaving(false); }
