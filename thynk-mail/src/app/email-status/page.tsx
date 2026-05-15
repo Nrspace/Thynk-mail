@@ -167,6 +167,7 @@ export default function EmailStatusPage() {
   const [statusFilter,     setStatusFilter]     = useState('');
   const [logs,             setLogs]             = useState<LogRow[]>([]);
   const [total,            setTotal]            = useState(0);
+  const [totalSummary,     setTotalSummary]     = useState<Record<string, number>>({});
   const [page,             setPage]             = useState(1);
   const [loading,          setLoading]          = useState(false);
   const [searched,         setSearched]         = useState(false);
@@ -203,10 +204,19 @@ export default function EmailStatusPage() {
     const r = await fetch(`/api/email-status?${params}`).then(r => r.json());
     setLogs(r.logs ?? []);
     setTotal(r.total ?? 0);
+    // Fetch full summary counts (all pages) on first load or filter change
+    if (p === 1) {
+      const summaryParams = new URLSearchParams(params);
+      summaryParams.delete('page');
+      summaryParams.set('summary_only', '1');
+      const sr = await fetch(`/api/email-status?${summaryParams}`).then(r => r.json());
+      setTotalSummary(sr.summary ?? {});
+    }
     setSearched(true);
     setLoading(false);
     setExpanded(null);
-  }, [selectedAccounts, statusFilter]);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [selectedAccounts, selectedCampaign, statusFilter]);
 
   function exportCSV() {
     if (!logs.length) return;
@@ -228,6 +238,7 @@ export default function EmailStatusPage() {
   }
 
   const totalPages = Math.ceil(total / PAGE_SIZE);
+  // summary = counts on current page (for status pill active indicators); totalSummary = full result set counts
   const summary = logs.reduce((acc, l) => { acc[l.status] = (acc[l.status] ?? 0) + 1; return acc; }, {} as Record<string, number>);
 
   return (
@@ -326,7 +337,8 @@ export default function EmailStatusPage() {
           <>
             <div className="flex flex-wrap items-center gap-3 mb-4">
               <span className="text-sm themed-muted"><span className="font-semibold themed-heading">{total.toLocaleString()}</span> messages found</span>
-              {Object.entries(summary).map(([s, n]) => { const m = STATUS_META[s]; if (!m) return null; return <span key={s} className="inline-flex items-center gap-1 px-2.5 py-1 rounded-full text-xs font-medium" style={{ color: m.color, background: m.bg }}>{n} {m.label}</span>; })}
+              {/* Use totalSummary (full result set) not page-local summary */}
+              {Object.entries(totalSummary).map(([s, n]) => { const m = STATUS_META[s]; if (!m) return null; return <span key={s} className="inline-flex items-center gap-1 px-2.5 py-1 rounded-full text-xs font-medium" style={{ color: m.color, background: m.bg }}>{n} {m.label}</span>; })}
             </div>
             <div className="card overflow-hidden mb-4">
               <table className="w-full text-sm">
