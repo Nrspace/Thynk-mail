@@ -98,6 +98,7 @@ body {
   .badge-red    { @apply badge bg-red-50 text-red-700; }
   .badge-blue   { @apply badge bg-blue-50 text-blue-700; }
   .badge-gray   { @apply badge bg-gray-100 text-gray-600; }
+  .badge-orange { @apply badge bg-orange-50 text-orange-700; }
 
   /* Themed text */
   .text-themed-primary   { color: var(--text-primary); }

@@ -1,4 +1,5 @@
 import nodemailer from 'nodemailer';
+import { SESClient, SendRawEmailCommand } from '@aws-sdk/client-ses';
 import type { EmailAccount } from '@/types';
 
 export interface SendEmailOptions {
@@ -50,6 +51,28 @@ function buildTransport(account: EmailAccount): nodemailer.Transporter {
   };
 
   switch (account.provider) {
+    case 'ses': {
+      const region          = account.ses_region || 'us-east-1';
+      const accessKeyId     = account.ses_access_key_id || '';
+      const secretAccessKey = account.ses_secret_access_key_encrypted
+        ? decryptCredential(account.ses_secret_access_key_encrypted)
+        : '';
+
+      if (!accessKeyId || !secretAccessKey) {
+        throw new Error('Amazon SES Access Key ID and Secret Access Key are required');
+      }
+
+      const ses = new SESClient({
+        region,
+        credentials: { accessKeyId, secretAccessKey },
+      });
+
+      // API-based transport (no pooled SMTP connection needed for SES)
+      return nodemailer.createTransport({
+        SES: { ses, aws: { SendRawEmailCommand } },
+      });
+    }
+
     case 'gmail':
       return nodemailer.createTransport({
         service: 'gmail',
@@ -148,6 +171,7 @@ function withTimeout<T>(promise: Promise<T>, ms: number, label: string): Promise
 
 export async function sendEmail(opts: SendEmailOptions): Promise<SendResult> {
   const transport = getTransport(opts.account);
+  const isSes = opts.account.provider === 'ses';
   try {
     const info = await withTimeout(
       transport.sendMail({
@@ -161,6 +185,11 @@ export async function sendEmail(opts: SendEmailOptions): Promise<SendResult> {
         headers: {
           'List-Unsubscribe': opts.headers?.['List-Unsubscribe'] || '',
           'List-Unsubscribe-Post': 'List-Unsubscribe=One-Click',
+          // Tags this send to the SES configuration set so SNS delivery/
+          // open/click/bounce/complaint events fire for it.
+          ...(isSes && opts.account.ses_configuration_set
+            ? { 'X-SES-CONFIGURATION-SET': opts.account.ses_configuration_set }
+            : {}),
           ...opts.headers,
         },
       }),

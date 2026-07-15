@@ -4,11 +4,16 @@ import { encryptCredential } from '@/lib/crypto';
 
 interface Params { params: { id: string } }
 
+const SAFE_COLUMNS =
+  'id,name,email,provider,smtp_host,smtp_port,smtp_user,' +
+  'ses_region,ses_access_key_id,ses_configuration_set,' +
+  'daily_limit,sent_today,last_reset_date,is_active,created_at,has_api_key';
+
 export async function GET(_req: NextRequest, { params }: Params) {
   const db = createServerClient();
   const { data, error } = await db
     .from('email_accounts')
-    .select('id,name,email,provider,smtp_host,smtp_port,smtp_user,daily_limit,sent_today,last_reset_date,is_active,created_at,has_api_key')
+    .select(SAFE_COLUMNS)
     .eq('id', params.id)
     .single();
   if (error) return NextResponse.json({ error: error.message }, { status: 404 });
@@ -34,11 +39,20 @@ export async function PATCH(req: NextRequest, { params }: Params) {
     delete body.api_key;
   }
 
+  // Encrypt Amazon SES secret access key if provided (leave stored key
+  // untouched when the field is left blank on edit)
+  if ('ses_secret_access_key' in body) {
+    if (body.ses_secret_access_key && body.ses_secret_access_key.trim()) {
+      body.ses_secret_access_key_encrypted = encryptCredential(body.ses_secret_access_key.trim());
+    }
+    delete body.ses_secret_access_key;
+  }
+
   const { data, error } = await db
     .from('email_accounts')
     .update({ ...body, updated_at: new Date().toISOString() })
     .eq('id', params.id)
-    .select('id,name,email,provider,smtp_host,smtp_port,smtp_user,daily_limit,sent_today,last_reset_date,is_active,created_at,has_api_key')
+    .select(SAFE_COLUMNS)
     .single();
   if (error) return NextResponse.json({ error: error.message }, { status: 500 });
   return NextResponse.json(data);

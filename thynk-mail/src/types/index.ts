@@ -1,4 +1,4 @@
-export type EmailProvider = 'gmail' | 'zoho' | 'outlook' | 'brevo' | 'smtp';
+export type EmailProvider = 'gmail' | 'zoho' | 'outlook' | 'brevo' | 'smtp' | 'ses';
 
 export type CampaignStatus =
   | 'draft'
@@ -15,6 +15,7 @@ export type SendLogStatus =
   | 'opened'
   | 'clicked'
   | 'bounced'
+  | 'complained'
   | 'failed'
   | 'unsubscribed';
 
@@ -35,6 +36,11 @@ export interface EmailAccount {
   smtp_user?: string;
   smtp_pass_encrypted?: string;
   oauth_token_encrypted?: string;
+  // Amazon SES (API-based sending + SNS delivery/open/click/bounce tracking)
+  ses_region?: string;
+  ses_access_key_id?: string;
+  ses_secret_access_key_encrypted?: string;
+  ses_configuration_set?: string;
   daily_limit: number;
   sent_today: number;
   last_reset_date?: string;
@@ -112,9 +118,15 @@ export interface SendLog {
   status: SendLogStatus;
   message_id?: string;
   sent_at?: string;
+  delivered_at?: string;
   opened_at?: string;
+  open_count?: number;
   clicked_at?: string;
+  click_count?: number;
   bounced_at?: string;
+  bounce_type?: string;
+  bounce_subtype?: string;
+  complained_at?: string;
   error_message?: string;
   contact?: Contact;
 }

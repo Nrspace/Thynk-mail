@@ -2,11 +2,12 @@
 import { useState, useEffect } from 'react';
 import { Mail, Plus, Trash2, CheckCircle, XCircle, Loader2, ExternalLink, Info, RotateCcw, RefreshCw, Key, Zap, Edit2, X, Save } from 'lucide-react';
 
-type Provider = 'gmail' | 'zoho' | 'outlook' | 'brevo' | 'smtp';
+type Provider = 'gmail' | 'zoho' | 'outlook' | 'brevo' | 'smtp' | 'ses';
 
 interface Account {
   id: string; name: string; email: string; provider: Provider;
   smtp_host?: string; smtp_port?: number; smtp_user?: string;
+  ses_region?: string; ses_access_key_id?: string; ses_configuration_set?: string;
   daily_limit: number; sent_today: number; last_reset_date?: string;
   is_active: boolean; created_at: string; has_api_key?: boolean;
 }
@@ -17,7 +18,14 @@ const PROVIDER_META: Record<Provider, { label: string; badge: string; host: stri
   zoho:    { label: 'Zoho Mail',      badge: 'badge-blue',   host: '',                       port: 587, limitDefault: 200,  color: '#1A73E8' },
   outlook: { label: 'Outlook / 365',  badge: 'badge-blue',   host: 'smtp.office365.com',     port: 587, limitDefault: 300,  color: '#0078D4' },
   smtp:    { label: 'Custom SMTP',    badge: 'badge-gray',   host: '',                       port: 587, limitDefault: 500,  color: '#64748b' },
+  ses:     { label: 'Amazon SES',     badge: 'badge-orange', host: '',                       port: 587, limitDefault: 2000, color: '#FF9900' },
 };
+
+const SES_REGIONS = [
+  'us-east-1', 'us-east-2', 'us-west-2',
+  'eu-west-1', 'eu-central-1', 'eu-west-2',
+  'ap-south-1', 'ap-southeast-1', 'ap-southeast-2', 'ap-northeast-1',
+];
 
 const PROVIDER_TIPS: Record<Provider, { steps: string[]; docsUrl: string; warning?: string }> = {
   brevo: {
@@ -65,6 +73,19 @@ const PROVIDER_TIPS: Record<Provider, { steps: string[]; docsUrl: string; warnin
       'Port 587 (STARTTLS) is recommended; 465 uses SSL',
     ],
   },
+  ses: {
+    docsUrl: 'https://console.aws.amazon.com/ses/home',
+    warning: 'Requires "production access" in SES (not sandbox) to send to unverified recipients.',
+    steps: [
+      'AWS Console → SES → Verified identities → verify your sending domain/email',
+      'IAM → create a user with an "AmazonSESFullAccess" policy → generate an Access Key',
+      'Paste the Access Key ID and Secret Access Key below',
+      'SES → Configuration sets → create one → enable Open tracking + Click tracking',
+      'On that configuration set → Event destinations → add SNS destination → send Send/Delivery/Bounce/Complaint/Reject/Open/Click',
+      'SNS → your topic → Create subscription → HTTPS → paste the webhook URL shown after saving this account',
+      'Enter the configuration set name below so sends get tagged for tracking',
+    ],
+  },
 };
 
 const DEFAULT_FORM = {
@@ -74,11 +95,49 @@ const DEFAULT_FORM = {
   smtp_user: '',
   smtp_pass: '',
   api_key: '',
+  ses_region: 'us-east-1',
+  ses_access_key_id: '',
+  ses_secret_access_key: '',
+  ses_configuration_set: '',
   daily_limit: PROVIDER_META.brevo.limitDefault,
   is_active: true,
 };
 
 type EditForm = typeof DEFAULT_FORM & { id: string };
+
+function SesWebhookUrlBox() {
+  const [url, setUrl] = useState('');
+  const [copied, setCopied] = useState(false);
+
+  useEffect(() => {
+    fetch('/api/accounts/ses-webhook-url')
+      .then(r => r.json())
+      .then(d => setUrl(d.url || ''))
+      .catch(() => {});
+  }, []);
+
+  if (!url) return null;
+
+  return (
+    <div className="rounded-xl border border-orange-100 bg-orange-50 p-4 space-y-2">
+      <div className="flex items-center gap-2">
+        <Zap size={14} className="text-orange-600" />
+        <span className="text-xs font-semibold text-orange-800">SNS Webhook URL — for delivery/open/click/bounce tracking</span>
+      </div>
+      <p className="text-xs text-orange-700">
+        Paste this as the HTTPS endpoint on your SNS topic subscription (SES → Configuration set → Event destination → SNS).
+      </p>
+      <div className="flex items-center gap-2">
+        <code className="input text-xs font-mono flex-1 overflow-x-auto whitespace-nowrap">{url}</code>
+        <button type="button"
+          onClick={() => { navigator.clipboard.writeText(url); setCopied(true); setTimeout(() => setCopied(false), 1500); }}
+          className="btn-secondary text-xs shrink-0">
+          {copied ? 'Copied!' : 'Copy'}
+        </button>
+      </div>
+    </div>
+  );
+}
 
 export default function AccountsPage() {
   const [accounts, setAccounts] = useState<Account[]>([]);
@@ -128,6 +187,10 @@ export default function AccountsPage() {
       smtp_user: '',
       smtp_pass: '',
       api_key: '',
+      ses_region: 'us-east-1',
+      ses_access_key_id: '',
+      ses_secret_access_key: '',
+      ses_configuration_set: '',
     }));
   }
 
@@ -143,6 +206,10 @@ export default function AccountsPage() {
       smtp_user:   a.smtp_user  ?? '',
       smtp_pass:   '', // never pre-fill passwords for security
       api_key:     '', // never pre-fill, but user can set new value
+      ses_region:             a.ses_region ?? 'us-east-1',
+      ses_access_key_id:      a.ses_access_key_id ?? '',
+      ses_secret_access_key:  '', // never pre-fill secrets, user can set new value
+      ses_configuration_set:  a.ses_configuration_set ?? '',
       daily_limit: a.daily_limit,
       is_active:   a.is_active,
     });
@@ -150,7 +217,16 @@ export default function AccountsPage() {
   }
 
   async function handleAdd() {
-    if (!form.name || !form.email || !form.smtp_pass) {
+    if (!form.name || !form.email) {
+      alert('Name and email address are required.');
+      return;
+    }
+    if (form.provider === 'ses') {
+      if (!form.ses_access_key_id || !form.ses_secret_access_key) {
+        alert('Amazon SES Access Key ID and Secret Access Key are required.');
+        return;
+      }
+    } else if (!form.smtp_pass) {
       alert('Name, email address, and SMTP password are required.');
       return;
     }
@@ -195,6 +271,14 @@ export default function AccountsPage() {
       }
       if (editAccount.api_key.trim()) {
         payload.api_key = editAccount.api_key;
+      }
+      if (editAccount.provider === 'ses') {
+        payload.ses_region = editAccount.ses_region;
+        payload.ses_access_key_id = editAccount.ses_access_key_id;
+        payload.ses_configuration_set = editAccount.ses_configuration_set;
+        if (editAccount.ses_secret_access_key.trim()) {
+          payload.ses_secret_access_key = editAccount.ses_secret_access_key;
+        }
       }
 
       const res = await fetch(`/api/accounts/${editAccount.id}`, {
@@ -276,6 +360,7 @@ export default function AccountsPage() {
   const meta = PROVIDER_META[form.provider];
   const needsCustomHost = form.provider === 'smtp';
   const isBrevo = form.provider === 'brevo';
+  const isSes = form.provider === 'ses';
   const brevoAccounts = accounts.filter(a => a.provider === 'brevo');
   const brevoWithKey = brevoAccounts.filter(a => a.has_api_key);
 
@@ -319,7 +404,7 @@ export default function AccountsPage() {
               {/* Provider tabs */}
               <div>
                 <label className="block text-xs font-medium mb-2" style={{ color: 'var(--text-muted)' }}>Provider</label>
-                <div className="grid grid-cols-5 gap-2">
+                <div className="grid grid-cols-3 sm:grid-cols-6 gap-2">
                   {(Object.keys(PROVIDER_META) as Provider[]).map(p => (
                     <button key={p}
                       onClick={() => {
@@ -393,28 +478,67 @@ export default function AccountsPage() {
               </div>
 
               {/* SMTP Username + Password */}
-              <div className="grid grid-cols-2 gap-3">
-                <div>
-                  <label className="block text-xs font-medium mb-1" style={{ color: 'var(--text-muted)' }}>
-                    {editIsBrevo ? 'Brevo SMTP Login' : 'SMTP Username'}
-                  </label>
-                  <input className="input"
-                    placeholder={editIsBrevo ? 'abc123@smtp-brevo.com' : 'usually same as email'}
-                    value={editAccount.smtp_user} onChange={e => setEditField('smtp_user', e.target.value)} />
-                  {editIsBrevo && (
-                    <p className="text-xs text-gray-400 mt-1">Found in Brevo → Account → SMTP & API → SMTP tab → "Login"</p>
-                  )}
+              {editAccount.provider !== 'ses' && (
+                <div className="grid grid-cols-2 gap-3">
+                  <div>
+                    <label className="block text-xs font-medium mb-1" style={{ color: 'var(--text-muted)' }}>
+                      {editIsBrevo ? 'Brevo SMTP Login' : 'SMTP Username'}
+                    </label>
+                    <input className="input"
+                      placeholder={editIsBrevo ? 'abc123@smtp-brevo.com' : 'usually same as email'}
+                      value={editAccount.smtp_user} onChange={e => setEditField('smtp_user', e.target.value)} />
+                    {editIsBrevo && (
+                      <p className="text-xs text-gray-400 mt-1">Found in Brevo → Account → SMTP & API → SMTP tab → "Login"</p>
+                    )}
+                  </div>
+                  <div>
+                    <label className="block text-xs font-medium mb-1" style={{ color: 'var(--text-muted)' }}>
+                      {editIsBrevo ? 'Brevo SMTP Key' : 'App Password / SMTP Password'}
+                    </label>
+                    <input className="input" type="password"
+                      placeholder="Leave blank to keep existing password"
+                      value={editAccount.smtp_pass} onChange={e => setEditField('smtp_pass', e.target.value)} />
+                    <p className="text-xs text-gray-400 mt-1">Leave blank to keep the existing password unchanged</p>
+                  </div>
                 </div>
-                <div>
-                  <label className="block text-xs font-medium mb-1" style={{ color: 'var(--text-muted)' }}>
-                    {editIsBrevo ? 'Brevo SMTP Key' : 'App Password / SMTP Password'}
-                  </label>
-                  <input className="input" type="password"
-                    placeholder="Leave blank to keep existing password"
-                    value={editAccount.smtp_pass} onChange={e => setEditField('smtp_pass', e.target.value)} />
-                  <p className="text-xs text-gray-400 mt-1">Leave blank to keep the existing password unchanged</p>
+              )}
+
+              {/* Amazon SES credentials */}
+              {editAccount.provider === 'ses' && (
+                <div className="space-y-3">
+                  <div className="grid grid-cols-2 gap-3">
+                    <div>
+                      <label className="block text-xs font-medium mb-1" style={{ color: 'var(--text-muted)' }}>AWS Region</label>
+                      <select className="input" value={editAccount.ses_region}
+                        onChange={e => setEditField('ses_region', e.target.value)}>
+                        {SES_REGIONS.map(r => <option key={r} value={r}>{r}</option>)}
+                      </select>
+                    </div>
+                    <div>
+                      <label className="block text-xs font-medium mb-1" style={{ color: 'var(--text-muted)' }}>Configuration Set</label>
+                      <input className="input" placeholder="thynk-mail"
+                        value={editAccount.ses_configuration_set}
+                        onChange={e => setEditField('ses_configuration_set', e.target.value)} />
+                    </div>
+                  </div>
+                  <div className="grid grid-cols-2 gap-3">
+                    <div>
+                      <label className="block text-xs font-medium mb-1" style={{ color: 'var(--text-muted)' }}>Access Key ID</label>
+                      <input className="input font-mono text-sm" placeholder="AKIA..."
+                        value={editAccount.ses_access_key_id}
+                        onChange={e => setEditField('ses_access_key_id', e.target.value)} />
+                    </div>
+                    <div>
+                      <label className="block text-xs font-medium mb-1" style={{ color: 'var(--text-muted)' }}>Secret Access Key</label>
+                      <input className="input font-mono text-sm" type="password"
+                        placeholder="Leave blank to keep existing key"
+                        value={editAccount.ses_secret_access_key}
+                        onChange={e => setEditField('ses_secret_access_key', e.target.value)} />
+                    </div>
+                  </div>
+                  <SesWebhookUrlBox />
                 </div>
-              </div>
+              )}
 
               {/* Brevo API key */}
               {editIsBrevo && (
@@ -632,7 +756,7 @@ export default function AccountsPage() {
 
           <div className="mb-5">
             <label className="block text-xs font-medium text-gray-600 mb-2">Provider</label>
-            <div className="grid grid-cols-5 gap-2">
+            <div className="grid grid-cols-3 sm:grid-cols-6 gap-2">
               {(Object.keys(PROVIDER_META) as Provider[]).map(p => (
                 <button key={p} onClick={() => handleProviderChange(p)}
                   className={`px-3 py-2.5 rounded-lg border text-xs font-medium transition-all ${
@@ -689,27 +813,66 @@ export default function AccountsPage() {
               </div>
             </div>
 
-            <div className="grid grid-cols-2 gap-3">
-              <div>
-                <label className="block text-xs font-medium text-gray-600 mb-1">
-                  {isBrevo ? 'Brevo SMTP Login' : 'SMTP Username'}
-                </label>
-                <input className="input"
-                  placeholder={isBrevo ? 'abc123@smtp-brevo.com' : 'usually same as email'}
-                  value={form.smtp_user} onChange={e => setField('smtp_user', e.target.value)} />
-                {isBrevo && (
-                  <p className="text-xs text-gray-400 mt-1">Found in Brevo → Account → SMTP &amp; API → SMTP tab → &quot;Login&quot;</p>
-                )}
+            {!isSes && (
+              <div className="grid grid-cols-2 gap-3">
+                <div>
+                  <label className="block text-xs font-medium text-gray-600 mb-1">
+                    {isBrevo ? 'Brevo SMTP Login' : 'SMTP Username'}
+                  </label>
+                  <input className="input"
+                    placeholder={isBrevo ? 'abc123@smtp-brevo.com' : 'usually same as email'}
+                    value={form.smtp_user} onChange={e => setField('smtp_user', e.target.value)} />
+                  {isBrevo && (
+                    <p className="text-xs text-gray-400 mt-1">Found in Brevo → Account → SMTP &amp; API → SMTP tab → &quot;Login&quot;</p>
+                  )}
+                </div>
+                <div>
+                  <label className="block text-xs font-medium text-gray-600 mb-1">
+                    {isBrevo ? 'Brevo SMTP Key' : 'App Password / SMTP Password'}
+                  </label>
+                  <input className="input" type="password"
+                    placeholder={isBrevo ? 'xsmtpsib-...' : '••••••••••••••••'}
+                    value={form.smtp_pass} onChange={e => setField('smtp_pass', e.target.value)} />
+                </div>
               </div>
-              <div>
-                <label className="block text-xs font-medium text-gray-600 mb-1">
-                  {isBrevo ? 'Brevo SMTP Key' : 'App Password / SMTP Password'}
-                </label>
-                <input className="input" type="password"
-                  placeholder={isBrevo ? 'xsmtpsib-...' : '••••••••••••••••'}
-                  value={form.smtp_pass} onChange={e => setField('smtp_pass', e.target.value)} />
+            )}
+
+            {isSes && (
+              <div className="space-y-3">
+                <div className="grid grid-cols-2 gap-3">
+                  <div>
+                    <label className="block text-xs font-medium text-gray-600 mb-1">AWS Region</label>
+                    <select className="input" value={form.ses_region}
+                      onChange={e => setField('ses_region', e.target.value)}>
+                      {SES_REGIONS.map(r => <option key={r} value={r}>{r}</option>)}
+                    </select>
+                  </div>
+                  <div>
+                    <label className="block text-xs font-medium text-gray-600 mb-1">Configuration Set</label>
+                    <input className="input" placeholder="thynk-mail"
+                      value={form.ses_configuration_set}
+                      onChange={e => setField('ses_configuration_set', e.target.value)} />
+                    <p className="text-xs text-gray-400 mt-1">Enables open/click/bounce tracking via SNS</p>
+                  </div>
+                </div>
+                <div className="grid grid-cols-2 gap-3">
+                  <div>
+                    <label className="block text-xs font-medium text-gray-600 mb-1">Access Key ID</label>
+                    <input className="input font-mono text-sm" placeholder="AKIA..."
+                      value={form.ses_access_key_id}
+                      onChange={e => setField('ses_access_key_id', e.target.value)} />
+                  </div>
+                  <div>
+                    <label className="block text-xs font-medium text-gray-600 mb-1">Secret Access Key</label>
+                    <input className="input font-mono text-sm" type="password"
+                      placeholder="••••••••••••••••"
+                      value={form.ses_secret_access_key}
+                      onChange={e => setField('ses_secret_access_key', e.target.value)} />
+                  </div>
+                </div>
+                <SesWebhookUrlBox />
               </div>
-            </div>
+            )}
 
             {isBrevo && (
               <div className="rounded-xl border border-blue-100 bg-blue-50 p-4 space-y-2">
@@ -816,6 +979,15 @@ export default function AccountsPage() {
                               >
                                 <Key size={10} /> Add API key for stats
                               </button>
+                        )}
+                        {a.provider === 'ses' && (
+                          a.ses_configuration_set
+                            ? <span className="inline-flex items-center gap-1 text-xs text-green-600 bg-green-50 border border-green-200 rounded-full px-2 py-0.5">
+                                <Zap size={10} /> Delivery tracking active
+                              </span>
+                            : <span className="inline-flex items-center gap-1 text-xs text-amber-600 bg-amber-50 border border-amber-200 rounded-full px-2 py-0.5">
+                                <Info size={10} /> Add a configuration set for tracking
+                              </span>
                         )}
                         {result?.ok === true && (
                           <span className="inline-flex items-center gap-1 text-xs text-green-600 font-medium">
