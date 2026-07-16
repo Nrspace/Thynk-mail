@@ -1,7 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { createServerClient } from '@/lib/supabase';
-
-import { DEMO_TEAM } from '@/lib/constants';
+import { requireProjectContext } from '@/lib/api-auth';
 
 interface ContactRow {
   email: string;
@@ -11,6 +10,10 @@ interface ContactRow {
 }
 
 export async function POST(req: NextRequest) {
+  const guard = await requireProjectContext();
+  if (!guard.ok) return guard.response;
+  const { projectId } = guard.ctx;
+
   const db = createServerClient();
   const body = await req.json();
   const { contacts, list_id } = body as { contacts: ContactRow[]; list_id?: string };
@@ -23,7 +26,7 @@ export async function POST(req: NextRequest) {
   const { data: suppressed } = await db
     .from('suppressions')
     .select('email')
-    .eq('team_id', DEMO_TEAM)
+    .eq('team_id', projectId)
     .in('email', contacts.map((c) => c.email));
 
   const suppressedEmails = new Set((suppressed ?? []).map((s) => s.email));
@@ -37,7 +40,7 @@ export async function POST(req: NextRequest) {
   const rows = valid.map(({ email, first_name, last_name, ...rest }) => {
     const metadata: Record<string, string> = {};
     Object.entries(rest).forEach(([k, v]) => { if (v) metadata[k] = v; });
-    return { team_id: DEMO_TEAM, email, first_name, last_name, metadata };
+    return { team_id: projectId, email, first_name, last_name, metadata };
   });
 
   const { data: inserted, error } = await db

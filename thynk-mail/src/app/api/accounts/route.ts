@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { createServerClient } from '@/lib/supabase';
 import { encryptCredential } from '@/lib/crypto';
-import { DEMO_TEAM } from '@/lib/constants';
+import { requireProjectContext } from '@/lib/api-auth';
 
 // Never return secret_encrypted columns to the client.
 const SAFE_COLUMNS =
@@ -12,17 +12,25 @@ const SAFE_COLUMNS =
 const PROVIDERS = ['gmail', 'zoho', 'outlook', 'brevo', 'smtp', 'ses'];
 
 export async function GET() {
+  const guard = await requireProjectContext();
+  if (!guard.ok) return guard.response;
+  const { projectId } = guard.ctx;
+
   const db = createServerClient();
   const { data, error } = await db
     .from('email_accounts')
     .select(SAFE_COLUMNS)
-    .eq('team_id', DEMO_TEAM)
+    .eq('team_id', projectId)
     .order('created_at', { ascending: false });
   if (error) return NextResponse.json({ error: error.message }, { status: 500 });
   return NextResponse.json({ data: data ?? [] });
 }
 
 export async function POST(req: NextRequest) {
+  const guard = await requireProjectContext();
+  if (!guard.ok) return guard.response;
+  const { projectId } = guard.ctx;
+
   const db = createServerClient();
   const body = await req.json();
   const {
@@ -37,7 +45,7 @@ export async function POST(req: NextRequest) {
   }
 
   const insertRow: Record<string, unknown> = {
-    team_id: DEMO_TEAM,
+    team_id: projectId,
     name, email, provider,
     daily_limit: daily_limit || 500,
     is_active: true,

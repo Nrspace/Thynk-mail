@@ -1,9 +1,14 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { createServerClient } from '@/lib/supabase';
 import { sendEmail } from '@/lib/smtp-router';
+import { requireProjectContext } from '@/lib/api-auth';
 import type { EmailAccount } from '@/types';
 
 export async function POST(req: NextRequest) {
+  const guard = await requireProjectContext();
+  if (!guard.ok) return guard.response;
+  const { projectId } = guard.ctx;
+
   const db = createServerClient();
   const body = await req.json();
   const { account_id, to, subject, html, text, from_name, from_email } = body;
@@ -16,6 +21,7 @@ export async function POST(req: NextRequest) {
     .from('email_accounts')
     .select('*')
     .eq('id', account_id)
+    .eq('team_id', projectId)
     .single();
 
   if (error || !account) {

@@ -1,9 +1,12 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { createServerClient } from '@/lib/supabase';
-
-import { DEMO_TEAM } from '@/lib/constants';
+import { requireProjectContext } from '@/lib/api-auth';
 
 export async function GET(req: NextRequest) {
+  const guard = await requireProjectContext();
+  if (!guard.ok) return guard.response;
+  const { projectId } = guard.ctx;
+
   const db = createServerClient();
   const { searchParams } = new URL(req.url);
   const list_id = searchParams.get('list_id');
@@ -12,7 +15,7 @@ export async function GET(req: NextRequest) {
   let query = db
     .from('contacts')
     .select('*')
-    .eq('team_id', DEMO_TEAM)
+    .eq('team_id', projectId)
     .order('created_at', { ascending: false });
 
   if (search) {
@@ -35,6 +38,10 @@ export async function GET(req: NextRequest) {
 }
 
 export async function POST(req: NextRequest) {
+  const guard = await requireProjectContext();
+  if (!guard.ok) return guard.response;
+  const { projectId } = guard.ctx;
+
   const db = createServerClient();
   const body = await req.json();
   const { email, first_name, last_name, metadata } = body;
@@ -44,7 +51,7 @@ export async function POST(req: NextRequest) {
   const { data, error } = await db
     .from('contacts')
     .upsert(
-      { team_id: DEMO_TEAM, email, first_name, last_name, metadata: metadata ?? {} },
+      { team_id: projectId, email, first_name, last_name, metadata: metadata ?? {} },
       { onConflict: 'team_id,email' }
     )
     .select()

@@ -1,7 +1,8 @@
 import { createServerClient } from '@/lib/supabase';
 import Link from 'next/link';
 import { Send, Plus, Calendar, Loader2 } from 'lucide-react';
-import { DEMO_TEAM } from '@/lib/constants';
+import { redirect } from 'next/navigation';
+import { getCurrentUser, getActiveProjectId } from '@/lib/session';
 import CampaignActions from '@/components/campaigns/CampaignActions';
 
 const statusColors: Record<string, string> = {
@@ -17,12 +18,17 @@ export const dynamic = 'force-dynamic';
 export const revalidate = 0;
 
 export default async function CampaignsPage() {
+  const user = await getCurrentUser();
+  if (!user) redirect('/login');
+  const projectId = await getActiveProjectId(user);
+  if (!projectId) redirect('/projects');
+
   const db = createServerClient();
 
   const { data, error } = await db
     .from('campaigns')
     .select('*')
-    .eq('team_id', DEMO_TEAM)
+    .eq('team_id', projectId)
     .order('created_at', { ascending: false });
 
   if (error) {

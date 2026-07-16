@@ -1,17 +1,23 @@
 import { createServerClient } from '@/lib/supabase';
 import Link from 'next/link';
 import { Plus } from 'lucide-react';
-import { DEMO_TEAM } from '@/lib/constants';
+import { redirect } from 'next/navigation';
+import { getCurrentUser, getActiveProjectId } from '@/lib/session';
 import TemplateList from '@/components/templates/TemplateList';
 
 export const dynamic = 'force-dynamic';
 
 export default async function TemplatesPage() {
+  const user = await getCurrentUser();
+  if (!user) redirect('/login');
+  const projectId = await getActiveProjectId(user);
+  if (!projectId) redirect('/projects');
+
   const db = createServerClient();
   const { data: templates } = await db
     .from('templates')
     .select('*')
-    .eq('team_id', DEMO_TEAM)
+    .eq('team_id', projectId)
     .order('created_at', { ascending: false });
 
   const rows = templates ?? [];

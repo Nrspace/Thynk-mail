@@ -1,22 +1,33 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { createServerClient } from '@/lib/supabase';
+import { requireProjectContext } from '@/lib/api-auth';
 
 interface Params { params: { id: string } }
 
 export async function GET(_req: NextRequest, { params }: Params) {
+  const guard = await requireProjectContext();
+  if (!guard.ok) return guard.response;
+  const { projectId } = guard.ctx;
+
   const db = createServerClient();
   const { data, error } = await db
     .from('campaigns')
     .select('*')
     .eq('id', params.id)
+    .eq('team_id', projectId)
     .single();
   if (error) return NextResponse.json({ error: error.message }, { status: 404 });
   return NextResponse.json(data);
 }
 
 export async function PATCH(req: NextRequest, { params }: Params) {
+  const guard = await requireProjectContext();
+  if (!guard.ok) return guard.response;
+  const { projectId } = guard.ctx;
+
   const db = createServerClient();
   const body = await req.json();
+  delete body.team_id; // never allow moving a record between projects
 
   // Sanitize — convert empty strings to null for nullable fields
   const sanitized = { ...body };
@@ -31,6 +42,7 @@ export async function PATCH(req: NextRequest, { params }: Params) {
     .from('campaigns')
     .update({ ...sanitized, updated_at: new Date().toISOString() })
     .eq('id', params.id)
+    .eq('team_id', projectId)
     .select()
     .single();
   if (error) return NextResponse.json({ error: error.message }, { status: 500 });
@@ -38,8 +50,12 @@ export async function PATCH(req: NextRequest, { params }: Params) {
 }
 
 export async function DELETE(_req: NextRequest, { params }: Params) {
+  const guard = await requireProjectContext();
+  if (!guard.ok) return guard.response;
+  const { projectId } = guard.ctx;
+
   const db = createServerClient();
-  const { error } = await db.from('campaigns').delete().eq('id', params.id);
+  const { error } = await db.from('campaigns').delete().eq('id', params.id).eq('team_id', projectId);
   if (error) return NextResponse.json({ error: error.message }, { status: 500 });
   return NextResponse.json({ success: true });
 }

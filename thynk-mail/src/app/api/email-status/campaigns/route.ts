@@ -1,14 +1,25 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { createServerClient } from '@/lib/supabase';
-import { DEMO_TEAM } from '@/lib/constants';
+import { requireProjectContext } from '@/lib/api-auth';
 
 // GET /api/email-status/campaigns?account_ids=id1,id2
 // Returns distinct campaigns that have send_logs for the given account IDs
 export async function GET(req: NextRequest) {
+  const guard = await requireProjectContext();
+  if (!guard.ok) return guard.response;
+  const { projectId } = guard.ctx;
+
   const db = createServerClient();
   const { searchParams } = new URL(req.url);
   const accountIdsParam = searchParams.get('account_ids');
-  const accountIds = accountIdsParam ? accountIdsParam.split(',').filter(Boolean) : [];
+  const requestedAccountIds = accountIdsParam ? accountIdsParam.split(',').filter(Boolean) : [];
+
+  // Only ever look at this project's own accounts.
+  const { data: teamAccounts } = await db.from('email_accounts').select('id').eq('team_id', projectId);
+  const teamAccountIds = (teamAccounts ?? []).map(a => a.id);
+  const accountIds = requestedAccountIds.length > 0
+    ? requestedAccountIds.filter(id => teamAccountIds.includes(id))
+    : teamAccountIds;
 
   if (accountIds.length === 0) {
     return NextResponse.json({ campaigns: [] });
@@ -30,7 +41,7 @@ export async function GET(req: NextRequest) {
   const { data: campaigns } = await db
     .from('campaigns')
     .select('id, name, subject')
-    .eq('team_id', DEMO_TEAM)
+    .eq('team_id', projectId)
     .in('id', campaignIds)
     .order('created_at', { ascending: false });
 

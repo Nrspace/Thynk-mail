@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { createServerClient } from '@/lib/supabase';
-import { DEMO_TEAM } from '@/lib/constants';
+import { requireProjectContext } from '@/lib/api-auth';
 
 /**
  * SINGLE SOURCE OF TRUTH: send_logs
@@ -50,6 +50,10 @@ function isSent(status: string)    { return ['sent','delivered','opened','clicke
 function isOpened(status: string)  { return status === 'opened' || status === 'clicked'; }
 
 export async function GET(req: NextRequest) {
+  const guard = await requireProjectContext();
+  if (!guard.ok) return guard.response;
+  const { projectId } = guard.ctx;
+
   const db = createServerClient();
   const { searchParams } = new URL(req.url);
   const rangeParam = searchParams.get('range') ?? 'year';
@@ -64,7 +68,7 @@ export async function GET(req: NextRequest) {
   const { data: teamAccounts } = await db
     .from('email_accounts')
     .select('id, name, email, provider')
-    .eq('team_id', DEMO_TEAM);
+    .eq('team_id', projectId);
 
   const allAccounts     = teamAccounts ?? [];
   const teamAccountIds  = allAccounts.map(a => a.id);
@@ -169,7 +173,7 @@ export async function GET(req: NextRequest) {
   const { data: campaignRows } = await db
     .from('campaigns')
     .select('id, name, status, created_at, sent_at')
-    .eq('team_id', DEMO_TEAM)
+    .eq('team_id', projectId)
     .order('created_at', { ascending: false });
 
   const campaigns = (campaignRows ?? []).map(c => ({

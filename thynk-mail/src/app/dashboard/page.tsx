@@ -1,7 +1,8 @@
 import { createServerClient } from '@/lib/supabase';
 import { BarChart3, Send, Users, TrendingUp, Mail, CheckCircle, Search, ArrowRight, AlertCircle } from 'lucide-react';
 import Link from 'next/link';
-import { DEMO_TEAM } from '@/lib/constants';
+import { redirect } from 'next/navigation';
+import { getCurrentUser, getActiveProjectId } from '@/lib/session';
 import DashboardCharts from '@/components/dashboard/DashboardCharts';
 
 async function getDashboardData(teamId: string) {
@@ -149,7 +150,12 @@ async function getDashboardData(teamId: string) {
 export const dynamic = 'force-dynamic';
 
 export default async function DashboardPage() {
-  const d = await getDashboardData(DEMO_TEAM);
+  const user = await getCurrentUser();
+  if (!user) redirect('/login');
+  const projectId = await getActiveProjectId(user);
+  if (!projectId) redirect('/projects');
+
+  const d = await getDashboardData(projectId);
   const currentYear  = new Date().getFullYear();
   const currentMonth = new Date().toLocaleString('default', { month: 'long' });
 

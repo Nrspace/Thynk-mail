@@ -10,7 +10,7 @@
 
 import { NextRequest, NextResponse } from 'next/server';
 import { createServerClient } from '@/lib/supabase';
-import { DEMO_TEAM } from '@/lib/constants';
+import { requireProjectContext } from '@/lib/api-auth';
 
 function decryptKey(encrypted: string): string {
   try { return Buffer.from(encrypted, 'base64').toString('utf8'); } catch { return encrypted; }
@@ -92,6 +92,10 @@ async function fetchBrevoEvents(
 }
 
 export async function POST(req: NextRequest) {
+  const guard = await requireProjectContext();
+  if (!guard.ok) return guard.response;
+  const { projectId } = guard.ctx;
+
   const db = createServerClient();
 
   let daysBack = 7;
@@ -108,7 +112,7 @@ export async function POST(req: NextRequest) {
   const { data: accounts, error: aErr } = await db
     .from('email_accounts')
     .select('id, name, api_key_encrypted, provider')
-    .eq('team_id', DEMO_TEAM)
+    .eq('team_id', projectId)
     .eq('provider', 'brevo')
     .not('api_key_encrypted', 'is', null);
 

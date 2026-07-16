@@ -1,14 +1,17 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { createServerClient } from '@/lib/supabase';
-
-import { DEMO_TEAM } from '@/lib/constants';
+import { requireProjectContext } from '@/lib/api-auth';
 
 export async function GET() {
+  const guard = await requireProjectContext();
+  if (!guard.ok) return guard.response;
+  const { projectId } = guard.ctx;
+
   const db = createServerClient();
   const { data: lists, error } = await db
     .from('lists')
     .select('id, name, description, created_at')
-    .eq('team_id', DEMO_TEAM)
+    .eq('team_id', projectId)
     .order('created_at', { ascending: false });
 
   if (error) return NextResponse.json({ error: error.message }, { status: 500 });
@@ -28,13 +31,17 @@ export async function GET() {
 }
 
 export async function POST(req: NextRequest) {
+  const guard = await requireProjectContext();
+  if (!guard.ok) return guard.response;
+  const { projectId } = guard.ctx;
+
   const db = createServerClient();
   const { name, description } = await req.json();
   if (!name) return NextResponse.json({ error: 'Name required' }, { status: 400 });
 
   const { data, error } = await db
     .from('lists')
-    .insert({ team_id: DEMO_TEAM, name, description })
+    .insert({ team_id: projectId, name, description })
     .select()
     .single();
 

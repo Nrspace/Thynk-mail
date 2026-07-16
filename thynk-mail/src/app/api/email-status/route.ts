@@ -1,15 +1,19 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { createServerClient } from '@/lib/supabase';
-import { DEMO_TEAM } from '@/lib/constants';
+import { requireProjectContext } from '@/lib/api-auth';
 
 export async function GET(req: NextRequest) {
+  const guard = await requireProjectContext();
+  if (!guard.ok) return guard.response;
+  const { projectId } = guard.ctx;
+
   const db = createServerClient();
   const { searchParams } = new URL(req.url);
   const email = searchParams.get('email')?.trim().toLowerCase();
   const campaignId = searchParams.get('campaign_id');
   const status = searchParams.get('status');
   const accountIdsParam = searchParams.get('account_ids');
-  const accountIds = accountIdsParam ? accountIdsParam.split(',').filter(Boolean) : [];
+  const requestedAccountIds = accountIdsParam ? accountIdsParam.split(',').filter(Boolean) : [];
   const page = parseInt(searchParams.get('page') ?? '1', 10);
   const limit = 50;
   const offset = (page - 1) * limit;
@@ -24,19 +28,24 @@ export async function GET(req: NextRequest) {
       account_id
     `, { count: 'exact' });
 
-  // Filter by specific account IDs if provided
+  // Always resolve this project's own accounts first, then (if the caller
+  // asked for specific accounts) intersect with that set — this way a
+  // request can never read another project's send logs by passing
+  // someone else's account id.
+  const { data: teamAccounts } = await db
+    .from('email_accounts')
+    .select('id')
+    .eq('team_id', projectId);
+  const teamAccountIds = (teamAccounts ?? []).map(a => a.id);
+
+  const accountIds = requestedAccountIds.length > 0
+    ? requestedAccountIds.filter(id => teamAccountIds.includes(id))
+    : teamAccountIds;
+
   if (accountIds.length > 0) {
     query = query.in('account_id', accountIds);
   } else {
-    // Restrict to accounts belonging to this team
-    const { data: teamAccounts } = await db
-      .from('email_accounts')
-      .select('id')
-      .eq('team_id', DEMO_TEAM);
-    const teamAccountIds = (teamAccounts ?? []).map(a => a.id);
-    if (teamAccountIds.length > 0) {
-      query = query.in('account_id', teamAccountIds);
-    }
+    return NextResponse.json({ logs: [], total: 0 });
   }
 
   // Filter by email (search contacts first)
@@ -44,7 +53,7 @@ export async function GET(req: NextRequest) {
     const { data: contacts } = await db
       .from('contacts')
       .select('id')
-      .eq('team_id', DEMO_TEAM)
+      .eq('team_id', projectId)
       .ilike('email', `%${email}%`)
       .limit(100);
     const contactIds = (contacts ?? []).map(c => c.id);

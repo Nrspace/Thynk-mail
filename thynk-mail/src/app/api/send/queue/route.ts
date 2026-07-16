@@ -1,7 +1,8 @@
-import { NextRequest } from 'next/server';
+import { NextRequest, NextResponse } from 'next/server';
 import { createServerClient } from '@/lib/supabase';
 import { sendEmail } from '@/lib/smtp-router';
 import { buildFinalHtml } from '@/lib/template-renderer';
+import { requireProjectContext } from '@/lib/api-auth';
 import type { EmailAccount, Contact } from '@/types';
 
 export const maxDuration = 300;
@@ -67,6 +68,10 @@ class AccountRotator {
 }
 
 export async function POST(req: NextRequest) {
+  const guard = await requireProjectContext();
+  if (!guard.ok) return guard.response;
+  const { projectId } = guard.ctx;
+
   let campaign_id: string;
   try {
     const body = await req.json();
@@ -95,9 +100,10 @@ export async function POST(req: NextRequest) {
     };
 
     try {
-      // Load campaign
+      // Load campaign — scoped to this project so a campaign id from
+      // another project can never be triggered here.
       const { data: campaign, error: cErr } = await db
-        .from('campaigns').select('*').eq('id', campaign_id).single();
+        .from('campaigns').select('*').eq('id', campaign_id).eq('team_id', projectId).single();
       if (cErr || !campaign) return fail(`Campaign not found: ${cErr?.message ?? 'no data'}`);
 
       // Resolve account IDs — support both new account_ids[] and legacy account_id

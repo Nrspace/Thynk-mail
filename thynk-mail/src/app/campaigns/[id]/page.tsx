@@ -1,16 +1,23 @@
 import { createServerClient } from '@/lib/supabase';
 import Link from 'next/link';
 import { ArrowLeft, Send, Users, Eye, MousePointer, AlertCircle } from 'lucide-react';
-import { notFound } from 'next/navigation';
+import { notFound, redirect } from 'next/navigation';
+import { getCurrentUser, getActiveProjectId } from '@/lib/session';
 
 interface Props { params: { id: string } }
 
 export default async function CampaignDetailPage({ params }: Props) {
+  const user = await getCurrentUser();
+  if (!user) redirect('/login');
+  const projectId = await getActiveProjectId(user);
+  if (!projectId) redirect('/projects');
+
   const db = createServerClient();
   const { data: campaign } = await db
     .from('campaigns')
     .select('*')
     .eq('id', params.id)
+    .eq('team_id', projectId)
     .single();
 
   if (!campaign) notFound();
