@@ -71,6 +71,11 @@ export async function POST(req: NextRequest) {
 
   const db = createServerClient();
 
+  if (projectId) {
+    const { data: project } = await db.from('projects').select('id').eq('id', projectId).maybeSingle();
+    if (!project) return NextResponse.json({ error: 'Selected project not found' }, { status: 400 });
+  }
+
   const { data: existing } = await db.from('app_users').select('id').ilike('email', email).maybeSingle();
   if (existing) {
     return NextResponse.json({ error: 'A user with that email already exists' }, { status: 409 });

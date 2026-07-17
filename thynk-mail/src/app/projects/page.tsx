@@ -1,6 +1,7 @@
 'use client';
 import { useEffect, useState } from 'react';
-import { Plus, FolderKanban, Power } from 'lucide-react';
+import { useRouter } from 'next/navigation';
+import { Plus, FolderKanban, Power, ArrowRight } from 'lucide-react';
 
 interface Project {
   id: string;
@@ -11,6 +12,7 @@ interface Project {
 }
 
 export default function ProjectsPage() {
+  const router = useRouter();
   const [projects, setProjects] = useState<Project[] | null>(null);
   const [forbidden, setForbidden] = useState(false);
   const [showForm, setShowForm] = useState(false);
@@ -51,6 +53,16 @@ export default function ProjectsPage() {
       body: JSON.stringify({ is_active: !p.is_active }),
     });
     load();
+  }
+
+  async function enterProject(p: Project) {
+    await fetch('/api/projects/switch', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ project_id: p.id }),
+    });
+    router.push('/dashboard');
+    router.refresh();
   }
 
   if (forbidden) {
@@ -111,6 +123,9 @@ export default function ProjectsPage() {
               </span>
               <button className="btn-secondary" onClick={() => toggleActive(p)} title={p.is_active ? 'Deactivate' : 'Activate'}>
                 <Power size={14} />
+              </button>
+              <button className="btn-primary" onClick={() => enterProject(p)}>
+                Enter <ArrowRight size={14} />
               </button>
             </div>
           </div>

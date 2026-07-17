@@ -12,18 +12,23 @@ interface AppUser {
   created_at: string;
 }
 
+interface Project { id: string; name: string; slug: string }
+
 const ROLE_LABEL: Record<AppUser['role'], string> = {
   super_admin: 'Super Admin',
   project_admin: 'Project Admin',
   project_member: 'Project Member',
 };
 
+const emptyForm = { name: '', email: '', password: '', role: 'project_member' as AppUser['role'], project_id: '' };
+
 export default function UsersPage() {
   const [me, setMe] = useState<{ role: AppUser['role'] } | null>(null);
   const [users, setUsers] = useState<AppUser[] | null>(null);
+  const [projects, setProjects] = useState<Project[]>([]);
   const [forbidden, setForbidden] = useState(false);
   const [showForm, setShowForm] = useState(false);
-  const [form, setForm] = useState({ name: '', email: '', password: '', role: 'project_member' as AppUser['role'] });
+  const [form, setForm] = useState(emptyForm);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState('');
 
@@ -31,6 +36,12 @@ export default function UsersPage() {
     const meRes = await fetch('/api/auth/me');
     const meData = await meRes.json();
     setMe(meData.user);
+
+    if (meData.user?.role === 'super_admin') {
+      const projRes = await fetch('/api/projects');
+      const projData = await projRes.json();
+      setProjects(Array.isArray(projData) ? projData : []);
+    }
 
     const res = await fetch('/api/users');
     if (res.status === 403) { setForbidden(true); return; }
@@ -43,16 +54,27 @@ export default function UsersPage() {
   async function handleCreate(e: React.FormEvent) {
     e.preventDefault();
     setError('');
+
+    // Super admins must pick a project for non-super-admin users.
+    if (me?.role === 'super_admin' && form.role !== 'super_admin' && !form.project_id) {
+      setError('Please select a project for this user.');
+      return;
+    }
+
     setSaving(true);
+    const payload: Record<string, unknown> = { name: form.name, email: form.email, password: form.password, role: form.role };
+    if (me?.role === 'super_admin' && form.role !== 'super_admin') {
+      payload.project_id = form.project_id;
+    }
     const res = await fetch('/api/users', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(form),
+      body: JSON.stringify(payload),
     });
     const data = await res.json();
     setSaving(false);
     if (!res.ok) { setError(data.error || 'Failed to create user'); return; }
-    setForm({ name: '', email: '', password: '', role: 'project_member' });
+    setForm(emptyForm);
     setShowForm(false);
     load();
   }
@@ -76,6 +98,8 @@ export default function UsersPage() {
 
   const availableRoles: AppUser['role'][] =
     me?.role === 'super_admin' ? ['super_admin', 'project_admin', 'project_member'] : ['project_admin', 'project_member'];
+
+  const needsProjectPicker = me?.role === 'super_admin' && form.role !== 'super_admin';
 
   return (
     <div className="p-8 max-w-3xl">
@@ -110,15 +134,37 @@ export default function UsersPage() {
             </div>
             <div>
               <label className="block text-sm font-medium text-gray-700 mb-1">Role</label>
-              <select className="input" value={form.role} onChange={e => setForm(f => ({ ...f, role: e.target.value as AppUser['role'] }))}>
+              <select
+                className="input"
+                value={form.role}
+                onChange={e => setForm(f => ({ ...f, role: e.target.value as AppUser['role'], project_id: e.target.value === 'super_admin' ? '' : f.project_id }))}
+              >
                 {availableRoles.map(r => <option key={r} value={r}>{ROLE_LABEL[r]}</option>)}
               </select>
             </div>
+
+            {needsProjectPicker && (
+              <div className="col-span-2">
+                <label className="block text-sm font-medium text-gray-700 mb-1">Project</label>
+                <select
+                  className="input"
+                  required
+                  value={form.project_id}
+                  onChange={e => setForm(f => ({ ...f, project_id: e.target.value }))}
+                >
+                  <option value="">Select a project…</option>
+                  {projects.map(p => <option key={p.id} value={p.id}>{p.name}</option>)}
+                </select>
+                {projects.length === 0 && (
+                  <p className="text-xs text-gray-500 mt-1">No projects yet — create one on the Projects page first.</p>
+                )}
+              </div>
+            )}
           </div>
           {error && <p className="text-sm text-red-600">{error}</p>}
           <div className="flex gap-2">
             <button type="submit" disabled={saving} className="btn-primary">{saving ? 'Creating…' : 'Create User'}</button>
-            <button type="button" className="btn-secondary" onClick={() => setShowForm(false)}>Cancel</button>
+            <button type="button" className="btn-secondary" onClick={() => { setShowForm(false); setForm(emptyForm); setError(''); }}>Cancel</button>
           </div>
         </form>
       )}
@@ -134,7 +180,12 @@ export default function UsersPage() {
               </div>
               <div>
                 <div className="font-medium">{u.name}</div>
-                <div className="text-xs text-gray-500">{u.email} · {ROLE_LABEL[u.role]}</div>
+                <div className="text-xs text-gray-500">
+                  {u.email} · {ROLE_LABEL[u.role]}
+                  {me?.role === 'super_admin' && u.project_id && (
+                    <> · {projects.find(p => p.id === u.project_id)?.name ?? 'Unknown project'}</>
+                  )}
+                </div>
               </div>
             </div>
             <div className="flex items-center gap-3">
