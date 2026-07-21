@@ -972,11 +972,13 @@ export default function AccountsPage() {
             </div>
 
             {draftTestResult && (
-              <div className={`flex items-center gap-2 px-3 py-2 rounded-lg text-xs ${draftTestResult.ok ? 'bg-green-50 text-green-700 border border-green-200' : 'bg-red-50 text-red-600 border border-red-200'}`}>
-                {draftTestResult.ok ? <CheckCircle size={14} /> : <XCircle size={14} />}
-                {draftTestResult.ok
-                  ? 'Connection successful — these credentials work.'
-                  : `Connection failed: ${draftTestResult.error ?? 'Unknown error'}`}
+              <div className={`flex items-start gap-2 px-3 py-2 rounded-lg text-xs leading-snug ${draftTestResult.ok ? 'bg-green-50 text-green-700 border border-green-200' : 'bg-red-50 text-red-600 border border-red-200'}`}>
+                {draftTestResult.ok ? <CheckCircle size={14} className="mt-0.5 shrink-0" /> : <XCircle size={14} className="mt-0.5 shrink-0" />}
+                <span>
+                  {draftTestResult.ok
+                    ? 'Connection successful — these credentials work.'
+                    : `Connection failed: ${draftTestResult.error ?? 'Unknown error'}`}
+                </span>
               </div>
             )}
           </div>
@@ -1050,7 +1052,7 @@ export default function AccountsPage() {
                       </div>
                       <p className="text-sm text-gray-500 mt-0.5">{a.email}</p>
                       {result?.ok === false && result.error && (
-                        <p className="text-xs text-red-500 mt-0.5 max-w-sm truncate">{result.error}</p>
+                        <p className="text-xs text-red-500 mt-0.5 max-w-lg leading-snug">{result.error}</p>
                       )}
                     </div>
                   </div>

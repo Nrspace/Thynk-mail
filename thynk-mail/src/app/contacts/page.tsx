@@ -1,6 +1,6 @@
 'use client';
 import { useState, useEffect, useRef } from 'react';
-import { Users, Upload, Plus, Search, Trash2, ClipboardPaste, X, CheckCircle, AlertCircle, FileSpreadsheet, ListPlus } from 'lucide-react';
+import { Users, Upload, Plus, Search, Trash2, ClipboardPaste, X, CheckCircle, AlertCircle, FileSpreadsheet, ListPlus, Download } from 'lucide-react';
 import * as XLSX from 'xlsx';
 
 interface Contact {
@@ -100,6 +100,17 @@ export default function ContactsPage() {
   function closePaste() {
     setShowPaste(false); setPasteText('');
     setPasteListId(''); setImportResult(null);
+  }
+
+  function downloadSampleFile() {
+    const sample = XLSX.utils.book_new();
+    const sheet = XLSX.utils.json_to_sheet([
+      { Email: 'jane.doe@example.com', 'First Name': 'Jane', 'Last Name': 'Doe' },
+      { Email: 'john.smith@example.com', 'First Name': 'John', 'Last Name': 'Smith' },
+    ]);
+    sheet['!cols'] = [{ wch: 28 }, { wch: 16 }, { wch: 16 }];
+    XLSX.utils.book_append_sheet(sample, sheet, 'Contacts');
+    XLSX.writeFile(sample, 'contacts-sample.xlsx');
   }
 
   // ── Excel (.xlsx/.xls) or CSV upload ──
@@ -209,6 +220,13 @@ export default function ContactsPage() {
             onClick={() => { setFileImportListId(activeList !== 'all' ? activeList : ''); setFileImportError(''); setFileImportResult(null); fileRef.current?.click(); }}
           >
             <FileSpreadsheet size={14} /> Import Excel / CSV
+          </button>
+          <button
+            className="btn-secondary !px-2"
+            onClick={downloadSampleFile}
+            title="Download a sample Excel file with the right columns"
+          >
+            <Download size={14} />
           </button>
           <button
             className="btn-secondary"
@@ -393,6 +411,10 @@ export default function ContactsPage() {
                 <span className="text-xs font-medium">Upload Excel / CSV</span>
               </button>
             </div>
+            <button onClick={downloadSampleFile} className="text-xs text-teal-600 hover:text-teal-700 mt-4 inline-flex items-center gap-1 font-medium">
+              <Download size={12} /> Download sample Excel file
+            </button>
+            <br />
             <button onClick={() => setChooserListId(null)} className="text-xs text-gray-400 hover:text-gray-600 mt-4">
               I&apos;ll do this later
             </button>

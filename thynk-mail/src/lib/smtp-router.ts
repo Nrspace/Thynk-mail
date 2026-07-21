@@ -1,5 +1,10 @@
 import nodemailer from 'nodemailer';
-import { SESClient, SendRawEmailCommand } from '@aws-sdk/client-ses';
+import {
+  SESClient,
+  SendRawEmailCommand,
+  GetSendQuotaCommand,
+  GetIdentityVerificationAttributesCommand,
+} from '@aws-sdk/client-ses';
 import type { EmailAccount } from '@/types';
 
 export interface SendEmailOptions {
@@ -43,6 +48,10 @@ const SMTP_CONNECTION_TIMEOUT = 10_000; // 10s to establish TCP + TLS
 const SMTP_SOCKET_TIMEOUT     = 15_000; // 15s idle socket before abort
 const SEND_TIMEOUT_MS         = 20_000; // hard outer timeout per sendMail call
 
+function buildSesClient(region: string, accessKeyId: string, secretAccessKey: string): SESClient {
+  return new SESClient({ region, credentials: { accessKeyId, secretAccessKey } });
+}
+
 export function buildTransport(account: EmailAccount): nodemailer.Transporter {
   const pass = account.smtp_pass_encrypted
     ? decryptCredential(account.smtp_pass_encrypted)
@@ -66,10 +75,7 @@ export function buildTransport(account: EmailAccount): nodemailer.Transporter {
         throw new Error('Amazon SES Access Key ID and Secret Access Key are required');
       }
 
-      const ses = new SESClient({
-        region,
-        credentials: { accessKeyId, secretAccessKey },
-      });
+      const ses = buildSesClient(region, accessKeyId, secretAccessKey);
 
       // API-based transport (no pooled SMTP connection needed for SES)
       return nodemailer.createTransport({
@@ -228,6 +234,19 @@ export interface DraftAccountConfig {
  * Outlook, Brevo, SES).
  */
 export async function testConfig(cfg: DraftAccountConfig): Promise<{ ok: boolean; error?: string }> {
+  if (cfg.provider === 'ses') {
+    if (!cfg.ses_access_key_id || !cfg.ses_secret_access_key) {
+      return { ok: false, error: 'Amazon SES Access Key ID and Secret Access Key are required' };
+    }
+    const health = await checkSesHealth({
+      email: cfg.email,
+      region: cfg.ses_region,
+      accessKeyId: cfg.ses_access_key_id,
+      secretAccessKey: cfg.ses_secret_access_key,
+    });
+    return sesHealthToTestResult(health);
+  }
+
   const fakeAccount = {
     id: `draft-${Date.now()}`,
     provider: cfg.provider,
@@ -254,7 +273,112 @@ export async function testConfig(cfg: DraftAccountConfig): Promise<{ ok: boolean
   }
 }
 
+export interface SesHealthResult {
+  ok: boolean;
+  error?: string;
+  isSandbox?: boolean;
+  identityVerified?: boolean;
+  max24HourSend?: number;
+  sentLast24Hours?: number;
+}
+
+/**
+ * Amazon SES's own `transport.verify()` (via nodemailer) only proves the AWS
+ * credentials are well-formed and can reach the API — it sends a deliberately
+ * malformed test message and treats ANY "InvalidParameterValue" response as
+ * success. It does NOT check the two things that actually break real campaign
+ * sends on SES:
+ *   1. The account is still in the SES Sandbox (new AWS accounts default to
+ *      this) — in Sandbox, SES silently rejects every send to a recipient
+ *      that isn't itself a verified address, which is why a whole campaign
+ *      can show 0 delivered with no obvious cause.
+ *   2. The "From" address/domain on the account was never verified in SES —
+ *      every send then fails with "Email address is not verified".
+ * This check calls the real SES account APIs to catch both up front.
+ */
+export async function checkSesHealth(cfg: {
+  email: string;
+  region?: string;
+  accessKeyId: string;
+  secretAccessKey: string;
+}): Promise<SesHealthResult> {
+  const region = cfg.region || 'us-east-1';
+  const ses = buildSesClient(region, cfg.accessKeyId, cfg.secretAccessKey);
+
+  try {
+    const quota = await withTimeout(ses.send(new GetSendQuotaCommand({})), SMTP_CONNECTION_TIMEOUT, 'GetSendQuota');
+    // AWS's default Sandbox quota is exactly 200 messages / 24h — a strong signal
+    // (not 100% certain, but no legitimate production account is capped this low).
+    const isSandbox = (quota.Max24HourSend ?? 0) <= 200;
+
+    let identityVerified: boolean | undefined = undefined;
+    try {
+      const verification = await withTimeout(
+        ses.send(new GetIdentityVerificationAttributesCommand({ Identities: [cfg.email] })),
+        SMTP_CONNECTION_TIMEOUT,
+        'GetIdentityVerificationAttributes'
+      );
+      const attrs = verification.VerificationAttributes?.[cfg.email];
+      identityVerified = attrs?.VerificationStatus === 'Success';
+    } catch {
+      // Non-fatal — some IAM policies don't grant ses:GetIdentityVerificationAttributes.
+      // Quota check above already proves the credentials/region are valid.
+    }
+
+    return {
+      ok: true,
+      isSandbox,
+      identityVerified,
+      max24HourSend: quota.Max24HourSend,
+      sentLast24Hours: quota.SentLast24Hours,
+    };
+  } catch (err: unknown) {
+    const message = err instanceof Error ? err.message : String(err);
+    return { ok: false, error: message };
+  }
+}
+
+/** Turns a raw SES health check into a clear, actionable message for the UI. */
+function sesHealthToTestResult(health: SesHealthResult): { ok: boolean; error?: string } {
+  if (!health.ok) return { ok: false, error: health.error };
+
+  const warnings: string[] = [];
+  if (health.isSandbox) {
+    warnings.push(
+      `Your SES account is still in the Sandbox (limit: ${health.max24HourSend}/24h). ` +
+      `In Sandbox mode, SES only delivers to recipient addresses that are themselves verified in SES — ` +
+      `this is almost always why a real campaign sends 0 emails. Request "Production Access" in the AWS SES console to fix this.`
+    );
+  }
+  if (health.identityVerified === false) {
+    warnings.push(
+      `The sending address is not a verified identity in SES yet. Verify it (or its domain) in the AWS SES console ` +
+      `under Verified Identities — unverified senders are rejected on every send.`
+    );
+  }
+
+  if (warnings.length) return { ok: false, error: warnings.join(' ') };
+  return { ok: true };
+}
+
 export async function testConnection(account: EmailAccount): Promise<{ ok: boolean; error?: string }> {
+  if (account.provider === 'ses') {
+    const accessKeyId = account.ses_access_key_id || '';
+    const secretAccessKey = account.ses_secret_access_key_encrypted
+      ? decryptCredential(account.ses_secret_access_key_encrypted)
+      : '';
+    if (!accessKeyId || !secretAccessKey) {
+      return { ok: false, error: 'Amazon SES Access Key ID and Secret Access Key are required' };
+    }
+    const health = await checkSesHealth({
+      email: account.email,
+      region: account.ses_region,
+      accessKeyId,
+      secretAccessKey,
+    });
+    return sesHealthToTestResult(health);
+  }
+
   try {
     // Always use a fresh transport for connection test
     evictTransport(account.id);
