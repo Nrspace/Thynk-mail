@@ -30,6 +30,10 @@ function decryptCredential(encrypted: string): string {
   }
 }
 
+function encryptCredential(plain: string): string {
+  return Buffer.from(plain, 'utf8').toString('base64');
+}
+
 // ── Transport pool — reuse one authenticated connection per account ──────────
 // Key: account.id → nodemailer transporter
 const transportPool = new Map<string, nodemailer.Transporter>();
@@ -39,7 +43,7 @@ const SMTP_CONNECTION_TIMEOUT = 10_000; // 10s to establish TCP + TLS
 const SMTP_SOCKET_TIMEOUT     = 15_000; // 15s idle socket before abort
 const SEND_TIMEOUT_MS         = 20_000; // hard outer timeout per sendMail call
 
-function buildTransport(account: EmailAccount): nodemailer.Transporter {
+export function buildTransport(account: EmailAccount): nodemailer.Transporter {
   const pass = account.smtp_pass_encrypted
     ? decryptCredential(account.smtp_pass_encrypted)
     : '';
@@ -202,6 +206,51 @@ export async function sendEmail(opts: SendEmailOptions): Promise<SendResult> {
     // Evict broken/timed-out transport so next email gets a fresh connection
     evictTransport(opts.account.id);
     return { success: false, error: message };
+  }
+}
+
+export interface DraftAccountConfig {
+  provider: EmailAccount['provider'];
+  email: string;
+  smtp_user?: string;
+  smtp_pass?: string;
+  smtp_host?: string;
+  smtp_port?: number;
+  ses_region?: string;
+  ses_access_key_id?: string;
+  ses_secret_access_key?: string;
+}
+
+/**
+ * Verify a set of email-account credentials before the account has been saved
+ * (and therefore has no id / pooled transport yet). Used by the "Test Connection"
+ * button on the Add Account form, for every provider type (SMTP, Gmail, Zoho,
+ * Outlook, Brevo, SES).
+ */
+export async function testConfig(cfg: DraftAccountConfig): Promise<{ ok: boolean; error?: string }> {
+  const fakeAccount = {
+    id: `draft-${Date.now()}`,
+    provider: cfg.provider,
+    email: cfg.email,
+    smtp_user: cfg.smtp_user,
+    smtp_pass_encrypted: cfg.smtp_pass ? encryptCredential(cfg.smtp_pass) : '',
+    smtp_host: cfg.smtp_host,
+    smtp_port: cfg.smtp_port,
+    ses_region: cfg.ses_region,
+    ses_access_key_id: cfg.ses_access_key_id,
+    ses_secret_access_key_encrypted: cfg.ses_secret_access_key ? encryptCredential(cfg.ses_secret_access_key) : '',
+  } as unknown as EmailAccount;
+
+  let transport: nodemailer.Transporter | null = null;
+  try {
+    transport = buildTransport(fakeAccount);
+    await withTimeout(transport.verify(), SMTP_CONNECTION_TIMEOUT, 'verify');
+    return { ok: true };
+  } catch (err: unknown) {
+    const message = err instanceof Error ? err.message : String(err);
+    return { ok: false, error: message };
+  } finally {
+    try { (transport as any)?.close?.(); } catch {}
   }
 }
 

@@ -1,10 +1,10 @@
 'use client';
 import { useState, useEffect } from 'react';
 import { useRouter } from 'next/navigation';
-import { ArrowLeft, Save, Trash2, Plus, MoveUp, MoveDown, Type, Image, Square, Minus, AlignLeft } from 'lucide-react';
+import { ArrowLeft, Save, Trash2, Plus, MoveUp, MoveDown, Type, Image, Square, Minus, AlignLeft, Code2, Download } from 'lucide-react';
 import Link from 'next/link';
 
-type BlockType = 'heading' | 'text' | 'button' | 'image' | 'divider' | 'spacer' | 'columns';
+type BlockType = 'heading' | 'text' | 'button' | 'image' | 'divider' | 'spacer' | 'columns' | 'html';
 
 interface Block {
   id: string;
@@ -34,6 +34,7 @@ const BLOCK_DEFAULTS: Record<BlockType, Omit<Block, 'id'>> = {
   divider: { type: 'divider', content: '', style: { padding: '8', background: '#ffffff', color: '#e5e7eb' } },
   spacer:  { type: 'spacer',  content: '', style: { height: '32', background: '#ffffff' } },
   columns: { type: 'columns', content: 'Left column content|Right column content', style: { color: '#374151', fontSize: '14', padding: '16', background: '#ffffff' } },
+  html: { type: 'html', content: '<!-- Paste your HTML here -->', style: { padding: '16', background: '#ffffff' } },
 };
 
 const BLOCK_ICONS: Record<BlockType, React.ReactNode> = {
@@ -44,6 +45,7 @@ const BLOCK_ICONS: Record<BlockType, React.ReactNode> = {
   divider: <Minus size={14} />,
   spacer:  <span style={{ fontSize: 12 }}>↕</span>,
   columns: <span style={{ fontSize: 12 }}>⊞</span>,
+  html: <Code2 size={14} />,
 };
 
 function renderBlockHtml(block: Block): string {
@@ -61,6 +63,7 @@ function renderBlockHtml(block: Block): string {
       const [left, right] = block.content.split('|');
       return `<div style="background:${bg};padding:${pad}"><table style="width:100%;border-collapse:collapse;font-family:sans-serif;"><tr><td style="width:50%;padding:8px;vertical-align:top;font-size:${s.fontSize||14}px;color:${s.color||'#374151'};">${left||''}</td><td style="width:50%;padding:8px;vertical-align:top;font-size:${s.fontSize||14}px;color:${s.color||'#374151'};">${right||''}</td></tr></table></div>`;
     }
+    case 'html': return `<div style="background:${bg};padding:${pad}">${block.content}</div>`;
     default: return '';
   }
 }
@@ -84,6 +87,7 @@ function BlockPreview({ block }: { block: Block }) {
       const [left, right] = block.content.split('|');
       return <div style={{ background: bg, padding: pad }}><div style={{ display:'flex', gap:16 }}><div style={{ flex:1, fontSize:`${s.fontSize||14}px`, color:s.color||'#374151', fontFamily:'sans-serif' }}>{left}</div><div style={{ flex:1, fontSize:`${s.fontSize||14}px`, color:s.color||'#374151', fontFamily:'sans-serif' }}>{right}</div></div></div>;
     }
+    case 'html': return <div style={{ background: bg, padding: pad }}><div dangerouslySetInnerHTML={{ __html: block.content }} /></div>;
     default: return null;
   }
 }
@@ -95,6 +99,14 @@ function BlockEditor({ block, onChange }: { block: Block; onChange: (b: Block) =
     <div className="space-y-3 p-4">
       {block.type === 'text' && <div><label className="block text-xs font-medium text-gray-600 mb-1">Content</label><textarea className="input text-xs" rows={5} value={block.content} onChange={e => onChange({ ...block, content: e.target.value })} /></div>}
       {block.type === 'heading' && <div><label className="block text-xs font-medium text-gray-600 mb-1">Heading Text</label><input className="input" value={block.content} onChange={e => onChange({ ...block, content: e.target.value })} /></div>}
+      {block.type === 'html' && (
+        <div>
+          <label className="block text-xs font-medium text-gray-600 mb-1">Paste HTML</label>
+          <p className="text-[11px] text-gray-400 mb-1.5">Paste HTML here — it renders live in the canvas on the left.</p>
+          <textarea className="input font-mono text-xs" rows={12} spellCheck={false} value={block.content}
+            onChange={e => onChange({ ...block, content: e.target.value })} />
+        </div>
+      )}
       {block.type === 'button' && <>
         <div><label className="block text-xs font-medium text-gray-600 mb-1">Button Label</label><input className="input" value={block.content} onChange={e => onChange({ ...block, content: e.target.value })} /></div>
         <div><label className="block text-xs font-medium text-gray-600 mb-1">Button URL</label><input className="input" value={s.buttonUrl||''} onChange={e => set('buttonUrl', e.target.value)} placeholder="https://" /></div>
@@ -148,7 +160,20 @@ export default function EditTemplatePage({ params }: PageProps) {
   const [tab, setTab]             = useState<'design'|'html'>('design');
 
   const selectedBlock = blocks.find(b => b.id === selectedId) ?? null;
-  const BLOCK_TYPES: BlockType[] = ['heading','text','button','image','divider','spacer','columns'];
+  const BLOCK_TYPES: BlockType[] = ['heading','text','button','image','divider','spacer','columns','html'];
+
+  const exportHtml = () => {
+    const slug = (form.name || 'template').trim().toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/(^-|-$)/g, '') || 'template';
+    const blob = new Blob([buildFullHtml(blocks)], { type: 'text/html' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `${slug}.html`;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    URL.revokeObjectURL(url);
+  };
 
   useEffect(() => {
     fetch(`/api/templates/${params.id}`)
@@ -156,13 +181,14 @@ export default function EditTemplatePage({ params }: PageProps) {
       .then(data => {
         if (data.error) { setNotFound(true); setLoading(false); return; }
         setForm({ name: data.name, subject: data.subject });
-        // Try to parse blocks from html, fallback to single text block
+        // Load the saved markup into an editable "Custom HTML" block so it renders
+        // correctly (a plain 'text' block would HTML-escape it instead of displaying it).
         if (data.html_body) {
           setBlocks([{
             id: uid(),
-            type: 'text',
+            type: 'html',
             content: data.html_body,
-            style: { color: '#374151', fontSize: '14', padding: '16', background: '#ffffff' },
+            style: { padding: '0', background: '#ffffff' },
           }]);
         }
         setLoading(false);
@@ -235,6 +261,9 @@ export default function EditTemplatePage({ params }: PageProps) {
             <button onClick={() => setTab('design')} style={{ padding:'6px 14px', fontSize:12, fontWeight:500, background: tab==='design'?'#0f766e':'#fff', color: tab==='design'?'#fff':'#6b7280', border:'none', cursor:'pointer' }}>Design</button>
             <button onClick={() => setTab('html')} style={{ padding:'6px 14px', fontSize:12, fontWeight:500, background: tab==='html'?'#0f766e':'#fff', color: tab==='html'?'#fff':'#6b7280', border:'none', cursor:'pointer' }}>HTML</button>
           </div>
+          <button onClick={exportHtml} className="btn-secondary">
+            <Download size={13} /> Export HTML
+          </button>
           <button onClick={handleSave} disabled={saving} className="btn-primary">
             <Save size={13} /> {saving ? 'Saving...' : 'Save Changes'}
           </button>

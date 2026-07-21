@@ -1,6 +1,7 @@
 'use client';
 import { useState, useEffect, useRef } from 'react';
-import { Users, Upload, Plus, Search, Trash2, ClipboardPaste, X, CheckCircle, AlertCircle } from 'lucide-react';
+import { Users, Upload, Plus, Search, Trash2, ClipboardPaste, X, CheckCircle, AlertCircle, FileSpreadsheet, ListPlus } from 'lucide-react';
+import * as XLSX from 'xlsx';
 
 interface Contact {
   id: string; email: string; first_name?: string; last_name?: string;
@@ -29,6 +30,16 @@ export default function ContactsPage() {
   // Delete list confirm
   const [deletingListId, setDeletingListId] = useState<string | null>(null);
   const [deletingListName, setDeletingListName] = useState('');
+
+  // Shown right after a new list is created — "how do you want to add contacts?"
+  const [chooserListId, setChooserListId] = useState<string | null>(null);
+  const [chooserListName, setChooserListName] = useState('');
+
+  // File (Excel/CSV) import
+  const [fileImporting, setFileImporting] = useState(false);
+  const [fileImportError, setFileImportError] = useState('');
+  const [fileImportResult, setFileImportResult] = useState<ImportResult | null>(null);
+  const [fileImportListId, setFileImportListId] = useState('');
 
   useEffect(() => { loadData(); }, []);
 
@@ -91,36 +102,86 @@ export default function ContactsPage() {
     setPasteListId(''); setImportResult(null);
   }
 
-  // ── CSV upload ──
-  async function handleCsvUpload(e: React.ChangeEvent<HTMLInputElement>) {
+  // ── Excel (.xlsx/.xls) or CSV upload ──
+  // Accepts any column header that looks like "email" / "e-mail" / "email address",
+  // "first name" / "firstname", "last name" / "lastname" — case-insensitive, so real
+  // exported spreadsheets from Excel/Google Sheets work without the user renaming columns.
+  function normalizeHeader(h: string): string {
+    const k = h.trim().toLowerCase().replace(/[\s_-]+/g, '');
+    if (['email', 'emailaddress', 'e-mail', 'mail'].includes(k)) return 'email';
+    if (['firstname', 'first', 'fname'].includes(k)) return 'first_name';
+    if (['lastname', 'last', 'lname'].includes(k)) return 'last_name';
+    return h.trim().toLowerCase();
+  }
+
+  async function handleFileUpload(e: React.ChangeEvent<HTMLInputElement>) {
     const file = e.target.files?.[0];
     if (!file) return;
-    const text = await file.text();
-    const lines = text.trim().split('\n');
-    const headers = lines[0].split(',').map(h => h.trim().toLowerCase());
-    const rows = lines.slice(1).map(line => {
-      const vals = line.split(',');
-      const obj: Record<string, string> = {};
-      headers.forEach((h, i) => { obj[h] = (vals[i] ?? '').trim().replace(/^"|"$/g, ''); });
-      return obj;
-    }).filter(r => r.email);
-    await fetch('/api/contacts/import', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ contacts: rows, list_id: activeList !== 'all' ? activeList : undefined }),
-    });
-    loadData();
+    setFileImportError('');
+    setFileImportResult(null);
+    setFileImporting(true);
+    try {
+      const buf = await file.arrayBuffer();
+      // SheetJS reads .xlsx, .xls, and .csv all the same way — no need to branch on extension.
+      const workbook = XLSX.read(buf, { type: 'array' });
+      const firstSheet = workbook.Sheets[workbook.SheetNames[0]];
+      const raw = XLSX.utils.sheet_to_json<Record<string, unknown>>(firstSheet, { defval: '' });
+
+      if (!raw.length) {
+        setFileImportError('No rows found in that file.');
+        return;
+      }
+
+      const rows = raw
+        .map(row => {
+          const obj: Record<string, string> = {};
+          Object.entries(row).forEach(([k, v]) => {
+            obj[normalizeHeader(k)] = String(v ?? '').trim();
+          });
+          return obj;
+        })
+        .filter(r => r.email && /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(r.email));
+
+      if (!rows.length) {
+        setFileImportError('No valid email addresses found. Make sure one column is named "Email".');
+        return;
+      }
+
+      const targetList = fileImportListId || (activeList !== 'all' ? activeList : undefined);
+      const res = await fetch('/api/contacts/import', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ contacts: rows, list_id: targetList }),
+      });
+      const d = await res.json();
+      if (d.error) { setFileImportError(d.error); return; }
+      setFileImportResult({ imported: d.imported ?? 0, skipped: d.skipped ?? 0, invalid: raw.length - rows.length });
+      loadData();
+    } catch {
+      setFileImportError('Could not read that file. Please upload a valid .xlsx, .xls, or .csv file.');
+    } finally {
+      setFileImporting(false);
+      e.target.value = ''; // allow re-uploading the same file name
+    }
   }
 
   // ── Create list ──
   async function createList() {
     if (!newListName.trim()) return;
-    await fetch('/api/contacts/lists', {
+    const res = await fetch('/api/contacts/lists', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ name: newListName }),
     });
+    const data = await res.json();
+    const createdName = newListName;
     setNewListName(''); setShowNewList(false); loadData();
+    // Immediately ask how they'd like to populate the new list — manual paste or a file.
+    if (data?.id) {
+      setActiveList(data.id);
+      setChooserListId(data.id);
+      setChooserListName(createdName);
+    }
   }
 
   // ── Delete list + all its contacts ──
@@ -142,9 +203,12 @@ export default function ContactsPage() {
           <p className="text-sm text-gray-500 mt-1">{contacts.length} total subscribers</p>
         </div>
         <div className="flex gap-2">
-          <input ref={fileRef} type="file" accept=".csv" className="hidden" onChange={handleCsvUpload} />
-          <button className="btn-secondary" onClick={() => fileRef.current?.click()}>
-            <Upload size={14} /> Import CSV
+          <input ref={fileRef} type="file" accept=".xlsx,.xls,.csv" className="hidden" onChange={handleFileUpload} />
+          <button
+            className="btn-secondary"
+            onClick={() => { setFileImportListId(activeList !== 'all' ? activeList : ''); setFileImportError(''); setFileImportResult(null); fileRef.current?.click(); }}
+          >
+            <FileSpreadsheet size={14} /> Import Excel / CSV
           </button>
           <button
             className="btn-secondary"
@@ -157,6 +221,29 @@ export default function ContactsPage() {
           </button>
         </div>
       </div>
+
+      {/* Inline status for a file import triggered from the header button */}
+      {fileImporting && (
+        <div className="mb-4 bg-teal-50 border border-teal-100 text-teal-700 text-sm rounded-lg px-4 py-2">
+          Importing file…
+        </div>
+      )}
+      {fileImportError && (
+        <div className="mb-4 bg-red-50 border border-red-100 text-red-600 text-sm rounded-lg px-4 py-2 flex items-center justify-between">
+          <span>{fileImportError}</span>
+          <button onClick={() => setFileImportError('')} className="text-red-400 hover:text-red-600"><X size={14} /></button>
+        </div>
+      )}
+      {fileImportResult && (
+        <div className="mb-4 bg-green-50 border border-green-100 text-green-700 text-sm rounded-lg px-4 py-2 flex items-center justify-between">
+          <span>
+            Imported {fileImportResult.imported}
+            {fileImportResult.skipped > 0 ? `, ${fileImportResult.skipped} duplicates skipped` : ''}
+            {fileImportResult.invalid > 0 ? `, ${fileImportResult.invalid} rows had no valid email` : ''}.
+          </span>
+          <button onClick={() => setFileImportResult(null)} className="text-green-500 hover:text-green-700"><X size={14} /></button>
+        </div>
+      )}
 
       <div className="flex gap-6">
         {/* ── Lists sidebar ── */}
@@ -227,7 +314,7 @@ export default function ContactsPage() {
             <div className="py-16 text-center text-gray-400">
               <Users size={32} className="mx-auto mb-3 opacity-25" />
               <p className="text-sm font-medium">No contacts yet</p>
-              <p className="text-xs mt-1">Import a CSV or paste email addresses</p>
+              <p className="text-xs mt-1">Upload an Excel/CSV file or paste email addresses</p>
               <button onClick={() => setShowPaste(true)} className="btn-primary mt-4 inline-flex">
                 <ClipboardPaste size={14} /> Paste Emails
               </button>
@@ -268,6 +355,50 @@ export default function ContactsPage() {
           )}
         </div>
       </div>
+
+      {/* ══ ADD CONTACTS CHOOSER — shown right after creating a list ══ */}
+      {chooserListId && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/40">
+          <div className="bg-white rounded-2xl shadow-xl w-full max-w-md p-6 text-center">
+            <div className="w-14 h-14 rounded-full bg-teal-100 flex items-center justify-center mx-auto mb-4">
+              <ListPlus size={24} className="text-teal-600" />
+            </div>
+            <h2 className="text-lg font-semibold text-gray-900 mb-1">
+              &quot;{chooserListName}&quot; created
+            </h2>
+            <p className="text-sm text-gray-500 mb-6">How would you like to add contacts to this list?</p>
+            <div className="flex gap-3">
+              <button
+                className="btn-secondary flex-1 justify-center flex-col !items-center py-4 gap-1"
+                onClick={() => {
+                  setPasteListId(chooserListId);
+                  setShowPaste(true);
+                  setChooserListId(null);
+                }}
+              >
+                <ClipboardPaste size={18} />
+                <span className="text-xs font-medium">Type / Paste Emails</span>
+              </button>
+              <button
+                className="btn-secondary flex-1 justify-center flex-col !items-center py-4 gap-1"
+                onClick={() => {
+                  setFileImportListId(chooserListId);
+                  setFileImportError('');
+                  setFileImportResult(null);
+                  setChooserListId(null);
+                  fileRef.current?.click();
+                }}
+              >
+                <FileSpreadsheet size={18} />
+                <span className="text-xs font-medium">Upload Excel / CSV</span>
+              </button>
+            </div>
+            <button onClick={() => setChooserListId(null)} className="text-xs text-gray-400 hover:text-gray-600 mt-4">
+              I&apos;ll do this later
+            </button>
+          </div>
+        </div>
+      )}
 
       {/* ══ PASTE EMAILS MODAL ══ */}
       {showPaste && (

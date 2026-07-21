@@ -1,10 +1,10 @@
 'use client';
 import { useState } from 'react';
 import { useRouter } from 'next/navigation';
-import { ArrowLeft, Save, Plus, Trash2, MoveUp, MoveDown, Type, Image, Square, Minus, AlignLeft } from 'lucide-react';
+import { ArrowLeft, Save, Plus, Trash2, MoveUp, MoveDown, Type, Image, Square, Minus, AlignLeft, Code2, Download } from 'lucide-react';
 import Link from 'next/link';
 
-type BlockType = 'heading' | 'text' | 'button' | 'image' | 'divider' | 'spacer' | 'columns';
+type BlockType = 'heading' | 'text' | 'button' | 'image' | 'divider' | 'spacer' | 'columns' | 'html';
 
 interface Block {
   id: string;
@@ -63,6 +63,11 @@ const BLOCK_DEFAULTS: Record<BlockType, Omit<Block, 'id'>> = {
     content: 'Left column content|Right column content',
     style: { color: '#374151', fontSize: '14', padding: '16', background: '#ffffff' },
   },
+  html: {
+    type: 'html',
+    content: '<!-- Paste your HTML here (e.g. from another email tool, or Word/Google Docs export) -->\n<p style="margin:0;font-family:sans-serif;color:#374151;">Paste your HTML in the editor panel on the right.</p>',
+    style: { padding: '16', background: '#ffffff' },
+  },
 };
 
 const BLOCK_ICONS: Record<BlockType, React.ReactNode> = {
@@ -73,6 +78,7 @@ const BLOCK_ICONS: Record<BlockType, React.ReactNode> = {
   divider: <Minus size={14} />,
   spacer: <span style={{ fontSize: 12 }}>↕</span>,
   columns: <span style={{ fontSize: 12 }}>⊞</span>,
+  html: <Code2 size={14} />,
 };
 
 function renderBlockHtml(block: Block): string {
@@ -114,6 +120,10 @@ function renderBlockHtml(block: Block): string {
   </table>
 </div>`;
     }
+    case 'html':
+      return `<div style="background:${bg};padding:${pad}">
+${block.content}
+</div>`;
     default:
       return '';
   }
@@ -184,6 +194,12 @@ function BlockPreview({ block }: { block: Block }) {
         </div>
       );
     }
+    case 'html':
+      return (
+        <div style={{ background: bg, padding: pad }}>
+          <div dangerouslySetInnerHTML={{ __html: block.content }} />
+        </div>
+      );
     default: return null;
   }
 }
@@ -206,6 +222,35 @@ function BlockEditor({ block, onChange }: { block: Block; onChange: (b: Block) =
         <div>
           <label className="block text-xs font-medium text-gray-600 mb-1">Heading Text</label>
           <input className="input" value={block.content} onChange={e => onChange({ ...block, content: e.target.value })} />
+        </div>
+      )}
+      {block.type === 'html' && (
+        <div>
+          <label className="block text-xs font-medium text-gray-600 mb-1">Paste HTML</label>
+          <p className="text-[11px] text-gray-400 mb-1.5">
+            Paste HTML code here (e.g. copied from another email builder). It will render live in the canvas on the left.
+          </p>
+          <textarea
+            className="input font-mono text-xs"
+            rows={12}
+            spellCheck={false}
+            value={block.content}
+            onChange={e => onChange({ ...block, content: e.target.value })}
+            onPaste={e => {
+              // Let the paste land in the textarea as plain text (default browser
+              // behaviour already does this for <textarea>), then immediately push
+              // the new value into block state so the canvas preview updates.
+              const text = e.clipboardData.getData('text/plain');
+              if (text) {
+                e.preventDefault();
+                const el = e.currentTarget;
+                const start = el.selectionStart ?? block.content.length;
+                const end = el.selectionEnd ?? block.content.length;
+                const next = block.content.slice(0, start) + text + block.content.slice(end);
+                onChange({ ...block, content: next });
+              }
+            }}
+          />
         </div>
       )}
       {block.type === 'button' && (
@@ -365,7 +410,20 @@ export default function NewTemplatePage() {
     } finally { setSaving(false); }
   };
 
-  const BLOCK_TYPES: BlockType[] = ['heading', 'text', 'button', 'image', 'divider', 'spacer', 'columns'];
+  const BLOCK_TYPES: BlockType[] = ['heading', 'text', 'button', 'image', 'divider', 'spacer', 'columns', 'html'];
+
+  const exportHtml = () => {
+    const slug = (form.name || 'template').trim().toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/(^-|-$)/g, '') || 'template';
+    const blob = new Blob([buildFullHtml(blocks)], { type: 'text/html' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `${slug}.html`;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    URL.revokeObjectURL(url);
+  };
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', height: '100vh', overflow: 'hidden' }}>
@@ -384,6 +442,9 @@ export default function NewTemplatePage() {
             <button onClick={() => setTab('design')} style={{ padding: '6px 14px', fontSize: 12, fontWeight: 500, background: tab === 'design' ? '#0f766e' : '#fff', color: tab === 'design' ? '#fff' : '#6b7280', border: 'none', cursor: 'pointer' }}>Design</button>
             <button onClick={() => setTab('html')} style={{ padding: '6px 14px', fontSize: 12, fontWeight: 500, background: tab === 'html' ? '#0f766e' : '#fff', color: tab === 'html' ? '#fff' : '#6b7280', border: 'none', cursor: 'pointer' }}>HTML</button>
           </div>
+          <button onClick={exportHtml} className="btn-secondary">
+            <Download size={13} /> Export HTML
+          </button>
           <button onClick={handleSave} disabled={saving} className="btn-primary">
             <Save size={13} /> {saving ? 'Saving...' : 'Save Template'}
           </button>

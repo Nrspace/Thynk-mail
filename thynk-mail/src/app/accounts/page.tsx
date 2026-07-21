@@ -151,6 +151,10 @@ export default function AccountsPage() {
   const [testResults, setTestResults] = useState<Record<string, { ok: boolean; error?: string }>>({});
   const [showTip, setShowTip] = useState(true);
 
+  // Test Connection — for the Add Account form, before the account is saved
+  const [testingDraft, setTestingDraft] = useState(false);
+  const [draftTestResult, setDraftTestResult] = useState<{ ok: boolean; error?: string } | null>(null);
+
   // Edit modal state
   const [editAccount, setEditAccount] = useState<EditForm | null>(null);
   const [editSaving, setEditSaving] = useState(false);
@@ -170,6 +174,7 @@ export default function AccountsPage() {
 
   function setField(k: string, v: unknown) {
     setForm(f => ({ ...f, [k]: v }));
+    setDraftTestResult(null);
   }
 
   function setEditField(k: string, v: unknown) {
@@ -192,6 +197,7 @@ export default function AccountsPage() {
       ses_secret_access_key: '',
       ses_configuration_set: '',
     }));
+    setDraftTestResult(null);
   }
 
   // Open edit modal — pre-fill all known fields
@@ -241,9 +247,39 @@ export default function AccountsPage() {
       if (data.error) { alert(data.error); return; }
       setForm(DEFAULT_FORM);
       setShowForm(false);
+      setDraftTestResult(null);
       load();
     } finally {
       setSaving(false);
+    }
+  }
+
+  // Test the credentials currently typed into the Add Account form — before saving.
+  async function handleTestDraft() {
+    if (!form.email) { alert('Enter an email address first.'); return; }
+    if (form.provider === 'ses') {
+      if (!form.ses_access_key_id || !form.ses_secret_access_key) {
+        alert('Enter the SES Access Key ID and Secret Access Key first.');
+        return;
+      }
+    } else if (!form.smtp_pass) {
+      alert('Enter the SMTP password first.');
+      return;
+    }
+    setTestingDraft(true);
+    setDraftTestResult(null);
+    try {
+      const res = await fetch('/api/accounts/test-config', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(form),
+      });
+      const data = await res.json();
+      setDraftTestResult(data);
+    } catch {
+      setDraftTestResult({ ok: false, error: 'Could not reach the server to run the test.' });
+    } finally {
+      setTestingDraft(false);
     }
   }
 
@@ -929,8 +965,20 @@ export default function AccountsPage() {
                 {saving ? <Loader2 size={14} className="animate-spin" /> : <Plus size={14} />}
                 {saving ? 'Connecting...' : `Connect ${meta.label}`}
               </button>
-              <button onClick={() => setShowForm(false)} className="btn-secondary">Cancel</button>
+              <button onClick={handleTestDraft} disabled={testingDraft} className="btn-secondary">
+                {testingDraft ? <><Loader2 size={14} className="animate-spin" /> Testing...</> : 'Test Connection'}
+              </button>
+              <button onClick={() => { setShowForm(false); setDraftTestResult(null); }} className="btn-secondary">Cancel</button>
             </div>
+
+            {draftTestResult && (
+              <div className={`flex items-center gap-2 px-3 py-2 rounded-lg text-xs ${draftTestResult.ok ? 'bg-green-50 text-green-700 border border-green-200' : 'bg-red-50 text-red-600 border border-red-200'}`}>
+                {draftTestResult.ok ? <CheckCircle size={14} /> : <XCircle size={14} />}
+                {draftTestResult.ok
+                  ? 'Connection successful — these credentials work.'
+                  : `Connection failed: ${draftTestResult.error ?? 'Unknown error'}`}
+              </div>
+            )}
           </div>
         </div>
       )}

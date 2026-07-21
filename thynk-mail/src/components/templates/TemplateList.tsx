@@ -4,13 +4,28 @@ import { useRouter } from 'next/navigation';
 import Link from 'next/link';
 import {
   FileText, Plus, Edit, Copy, Trash2, Eye, X,
-  Loader2, Code, Calendar,
+  Loader2, Code, Calendar, Download,
 } from 'lucide-react';
 
 interface Template {
   id: string; name: string; subject: string;
   html_body: string; text_body?: string;
   variables?: string[]; created_at: string; updated_at?: string;
+}
+
+// Downloads a template's HTML as a standalone .html file the user can keep,
+// share, or open in another email tool.
+function exportTemplateHtml(t: Template) {
+  const slug = (t.name || 'template').trim().toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/(^-|-$)/g, '') || 'template';
+  const blob = new Blob([t.html_body || ''], { type: 'text/html' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = `${slug}.html`;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  URL.revokeObjectURL(url);
 }
 
 function PreviewModal({ template, onClose }: { template: Template; onClose: () => void }) {
@@ -87,6 +102,10 @@ function PreviewModal({ template, onClose }: { template: Template; onClose: () =
 
         {/* Footer actions */}
         <div className="px-6 py-4 border-t flex justify-end gap-2" style={{ borderColor: 'var(--card-border)' }}>
+          <button onClick={() => exportTemplateHtml(template)}
+            className="btn-secondary text-sm flex items-center gap-1.5">
+            <Download size={13} /> Export HTML
+          </button>
           <Link href={`/templates/${template.id}/edit`}
             className="btn-primary text-sm flex items-center gap-1.5">
             <Edit size={13} /> Edit Template
@@ -260,6 +279,13 @@ export default function TemplateList({ templates: initialTemplates }: { template
                     {copying === t.id
                       ? <Loader2 size={14} className="animate-spin" />
                       : <Copy size={14} />}
+                  </button>
+                  <button
+                    onClick={() => exportTemplateHtml(t)}
+                    className="p-1.5 rounded text-gray-400 hover:text-teal-600 hover:bg-teal-50 transition-colors"
+                    title="Export HTML"
+                  >
+                    <Download size={14} />
                   </button>
                   <button
                     onClick={() => handleDelete(t)}
