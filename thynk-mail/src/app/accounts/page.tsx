@@ -972,12 +972,20 @@ export default function AccountsPage() {
             </div>
 
             {draftTestResult && (
-              <div className={`flex items-start gap-2 px-3 py-2 rounded-lg text-xs leading-snug ${draftTestResult.ok ? 'bg-green-50 text-green-700 border border-green-200' : 'bg-red-50 text-red-600 border border-red-200'}`}>
-                {draftTestResult.ok ? <CheckCircle size={14} className="mt-0.5 shrink-0" /> : <XCircle size={14} className="mt-0.5 shrink-0" />}
+              <div className={`flex items-start gap-2 px-3 py-2 rounded-lg text-xs leading-snug ${
+                !draftTestResult.ok ? 'bg-red-50 text-red-600 border border-red-200'
+                : draftTestResult.error ? 'bg-amber-50 text-amber-700 border border-amber-200'
+                : 'bg-green-50 text-green-700 border border-green-200'
+              }`}>
+                {!draftTestResult.ok
+                  ? <XCircle size={14} className="mt-0.5 shrink-0" />
+                  : <CheckCircle size={14} className="mt-0.5 shrink-0" />}
                 <span>
-                  {draftTestResult.ok
-                    ? 'Connection successful — these credentials work.'
-                    : `Connection failed: ${draftTestResult.error ?? 'Unknown error'}`}
+                  {!draftTestResult.ok
+                    ? `Connection failed: ${draftTestResult.error ?? 'Unknown error'}`
+                    : draftTestResult.error
+                      ? `Connected. ${draftTestResult.error}`
+                      : 'Connection successful — these credentials work.'}
                 </span>
               </div>
             )}
@@ -1039,9 +1047,14 @@ export default function AccountsPage() {
                                 <Info size={10} /> Add a configuration set for tracking
                               </span>
                         )}
-                        {result?.ok === true && (
+                        {result?.ok === true && !result.error && (
                           <span className="inline-flex items-center gap-1 text-xs text-green-600 font-medium">
                             <CheckCircle size={12} /> Connected
+                          </span>
+                        )}
+                        {result?.ok === true && result.error && (
+                          <span className="inline-flex items-center gap-1 text-xs text-amber-600 font-medium" title={result.error}>
+                            <Info size={12} /> Connected (see note)
                           </span>
                         )}
                         {result?.ok === false && (
@@ -1051,8 +1064,8 @@ export default function AccountsPage() {
                         )}
                       </div>
                       <p className="text-sm text-gray-500 mt-0.5">{a.email}</p>
-                      {result?.ok === false && result.error && (
-                        <p className="text-xs text-red-500 mt-0.5 max-w-lg leading-snug">{result.error}</p>
+                      {result?.error && (
+                        <p className={`text-xs mt-0.5 max-w-lg leading-snug ${result.ok ? 'text-amber-600' : 'text-red-500'}`}>{result.error}</p>
                       )}
                     </div>
                   </div>

@@ -280,6 +280,8 @@ export interface SesHealthResult {
   identityVerified?: boolean;
   max24HourSend?: number;
   sentLast24Hours?: number;
+  quotaCheckDenied?: boolean;
+  sendPermissionConfirmed?: boolean;
 }
 
 /**
@@ -305,37 +307,71 @@ export async function checkSesHealth(cfg: {
   const region = cfg.region || 'us-east-1';
   const ses = buildSesClient(region, cfg.accessKeyId, cfg.secretAccessKey);
 
+  let isSandbox: boolean | undefined;
+  let max24HourSend: number | undefined;
+  let sentLast24Hours: number | undefined;
+  let quotaCheckDenied = false;
+
   try {
     const quota = await withTimeout(ses.send(new GetSendQuotaCommand({})), SMTP_CONNECTION_TIMEOUT, 'GetSendQuota');
     // AWS's default Sandbox quota is exactly 200 messages / 24h — a strong signal
     // (not 100% certain, but no legitimate production account is capped this low).
-    const isSandbox = (quota.Max24HourSend ?? 0) <= 200;
-
-    let identityVerified: boolean | undefined = undefined;
-    try {
-      const verification = await withTimeout(
-        ses.send(new GetIdentityVerificationAttributesCommand({ Identities: [cfg.email] })),
-        SMTP_CONNECTION_TIMEOUT,
-        'GetIdentityVerificationAttributes'
-      );
-      const attrs = verification.VerificationAttributes?.[cfg.email];
-      identityVerified = attrs?.VerificationStatus === 'Success';
-    } catch {
-      // Non-fatal — some IAM policies don't grant ses:GetIdentityVerificationAttributes.
-      // Quota check above already proves the credentials/region are valid.
-    }
-
-    return {
-      ok: true,
-      isSandbox,
-      identityVerified,
-      max24HourSend: quota.Max24HourSend,
-      sentLast24Hours: quota.SentLast24Hours,
-    };
+    isSandbox = (quota.Max24HourSend ?? 0) <= 200;
+    max24HourSend = quota.Max24HourSend;
+    sentLast24Hours = quota.SentLast24Hours;
   } catch (err: unknown) {
+    // A LOT of real-world IAM policies only grant send permissions, not
+    // account-status read permissions (ses:GetSendQuota). That alone doesn't
+    // mean sending will fail, so we don't treat it as fatal — we just can't
+    // report the Sandbox/quota status, and we say so explicitly below.
     const message = err instanceof Error ? err.message : String(err);
-    return { ok: false, error: message };
+    if (/not authorized|AccessDenied/i.test(message)) {
+      quotaCheckDenied = true;
+    } else {
+      // Anything else (bad credentials, wrong region, network error) IS fatal —
+      // it means the account itself can't be reached at all.
+      return { ok: false, error: message };
+    }
   }
+
+  let identityVerified: boolean | undefined;
+  try {
+    const verification = await withTimeout(
+      ses.send(new GetIdentityVerificationAttributesCommand({ Identities: [cfg.email] })),
+      SMTP_CONNECTION_TIMEOUT,
+      'GetIdentityVerificationAttributes'
+    );
+    const attrs = verification.VerificationAttributes?.[cfg.email];
+    identityVerified = attrs?.VerificationStatus === 'Success';
+  } catch {
+    // Non-fatal — some IAM policies don't grant this either.
+  }
+
+  // If we couldn't check quota OR identity verification (narrow IAM policy),
+  // fall back to nodemailer's SES verify() to at least confirm the credentials
+  // can actually invoke ses:SendRawEmail — proving basic send capability works
+  // even though we can't see Sandbox/verification status from here.
+  let sendPermissionConfirmed: boolean | undefined;
+  if (quotaCheckDenied && identityVerified === undefined) {
+    try {
+      const transport = nodemailer.createTransport({ SES: { ses, aws: { SendRawEmailCommand } } });
+      await withTimeout(transport.verify(), SMTP_CONNECTION_TIMEOUT, 'verify');
+      sendPermissionConfirmed = true;
+    } catch (err: unknown) {
+      const message = err instanceof Error ? err.message : String(err);
+      return { ok: false, error: `Credentials could not send via SES: ${message}` };
+    }
+  }
+
+  return {
+    ok: true,
+    isSandbox,
+    identityVerified,
+    max24HourSend,
+    sentLast24Hours,
+    quotaCheckDenied,
+    sendPermissionConfirmed,
+  };
 }
 
 /** Turns a raw SES health check into a clear, actionable message for the UI. */
@@ -356,9 +392,23 @@ function sesHealthToTestResult(health: SesHealthResult): { ok: boolean; error?: 
       `under Verified Identities — unverified senders are rejected on every send.`
     );
   }
+  if (health.quotaCheckDenied) {
+    warnings.push(
+      `Note: this IAM user isn't allowed to check Sandbox/quota status (missing ses:GetSendQuota permission), ` +
+      (health.sendPermissionConfirmed
+        ? `but sending itself was confirmed to work. `
+        : ``) +
+      `Add ses:GetSendQuota and ses:GetIdentityVerificationAttributes to the IAM policy for a full check, ` +
+      `or verify Sandbox status manually in the AWS SES console.`
+    );
+  }
 
-  if (warnings.length) return { ok: false, error: warnings.join(' ') };
-  return { ok: true };
+  if (health.isSandbox || health.identityVerified === false) {
+    return { ok: false, error: warnings.join(' ') };
+  }
+  // Quota-check-denied alone is just an incomplete check, not a known failure —
+  // report success with the caveat rather than blocking the user.
+  return { ok: true, error: warnings.length ? warnings.join(' ') : undefined };
 }
 
 export async function testConnection(account: EmailAccount): Promise<{ ok: boolean; error?: string }> {
