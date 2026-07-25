@@ -20,6 +20,8 @@ interface SendState {
   sent: number; failed: number; total: number; pct: number;
   message: string;
   lastError?: string;
+  batch?: number;
+  totalBatches?: number;
 }
 
 export default function CampaignActions({ campaign }: { campaign: Campaign }) {
@@ -38,131 +40,125 @@ export default function CampaignActions({ campaign }: { campaign: Campaign }) {
   const canCancel = ['sending', 'paused', 'scheduled'].includes(campaign.status);
   const isSending = sendState.phase === 'sending';
 
+  // Shared SSE-consuming loop for both "Send now" and "Resume". Handles the
+  // 'chunk' event emitted when a single invocation hits its execution-time
+  // budget with contacts still left to send (see send/queue/route.ts) by
+  // automatically calling the endpoint again — each call is safe to repeat
+  // since already-sent contacts are always skipped server-side. This is what
+  // lets large lists (1000+) send successfully instead of the function
+  // getting killed mid-way through a single oversized request.
+  //
+  // For 5,000+ contacts the backend also groups the send into 2-3 named
+  // batches (reported via 'batch_start' and the batch/totalBatches fields
+  // on other events) that run automatically back-to-back with no pause —
+  // this is purely for clearer progress reporting on large campaigns.
+  async function streamSend(initialMessage: string) {
+    setSendState({ phase: 'sending', sent: 0, failed: 0, total: 0, pct: 0, message: initialMessage });
+
+    let keepGoing = true;
+    while (keepGoing) {
+      keepGoing = false;
+      try {
+        const res = await fetch('/api/send/queue', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ campaign_id: campaign.id }),
+        });
+
+        if (!res.ok || !res.body) {
+          const text = await res.text().catch(() => `HTTP ${res.status}`);
+          setSendState(s => ({ ...s, phase: 'error', message: text.slice(0, 200) }));
+          return;
+        }
+
+        const reader = res.body.getReader();
+        const dec = new TextDecoder();
+        let buf = '';
+
+        while (true) {
+          const { done, value } = await reader.read();
+          if (done) break;
+          buf += dec.decode(value, { stream: true });
+          const parts = buf.split('\n\n');
+          buf = parts.pop() ?? '';
+          for (const part of parts) {
+            const evMatch   = part.match(/^event: (\w+)/m);
+            const dataMatch = part.match(/^data: (.+)$/m);
+            if (!evMatch || !dataMatch) continue;
+            let data: any;
+            try { data = JSON.parse(dataMatch[1]); } catch { continue; }
+            const ev = evMatch[1];
+
+            if (ev === 'batch_start') {
+              // A new named batch (of 2-3 total, for 5,000+ campaigns) is
+              // starting — surface it in the progress message, then keep
+              // going automatically, no pause.
+              setSendState(s => ({
+                ...s,
+                batch: data.batch, totalBatches: data.totalBatches,
+                message: `Starting batch ${data.batch} of ${data.totalBatches} (contacts ${data.rangeStart}–${data.rangeEnd} of ${data.total})…`,
+              }));
+            } else if (ev === 'progress') {
+              setSendState({
+                phase: 'sending',
+                sent: data.sent, failed: data.failed, total: data.total, pct: data.pct,
+                batch: data.batch, totalBatches: data.totalBatches,
+                message: data.totalBatches > 1
+                  ? `Batch ${data.batch} of ${data.totalBatches} — sent ${data.sent} of ${data.total}${data.failed ? ` · ${data.failed} failed` : ''}`
+                  : `Sent ${data.sent} of ${data.total}${data.failed ? ` · ${data.failed} failed` : ''}`,
+              });
+            } else if (ev === 'chunk') {
+              // This invocation's time budget ran out with contacts still
+              // queued — progress so far is already saved, so loop again.
+              setSendState({
+                phase: 'sending',
+                sent: data.sent, failed: data.failed, total: data.total, pct: data.pct,
+                batch: data.batch, totalBatches: data.totalBatches,
+                message: data.message ?? `Sent ${data.sent} of ${data.total} — continuing…`,
+              });
+              keepGoing = true;
+            } else if (ev === 'done') {
+              const msg = data.paused
+                ? `Daily limit reached — ${data.sent} sent. Remaining contacts queued for tomorrow.`
+                : `Done — ${data.sent} sent${data.failed ? `, ${data.failed} failed` : ''}`;
+              setSendState(s => ({
+                phase: 'done',
+                sent: data.sent, failed: data.failed, total: data.total, pct: 100,
+                batch: s.totalBatches, totalBatches: data.totalBatches ?? s.totalBatches,
+                message: msg,
+              }));
+              setTimeout(() => {
+                setSendState(s => ({ ...s, phase: 'idle' }));
+                router.refresh();
+              }, 4000);
+            } else if (ev === 'warn') {
+              setSendState(s => ({ ...s, lastError: `Last error: ${data.error}` }));
+            } else if (ev === 'error') {
+              setSendState(s => ({ ...s, phase: 'error', message: data.error ?? 'Unknown error' }));
+            }
+          }
+        }
+      } catch (e: unknown) {
+        setSendState(s => ({
+          ...s, phase: 'error',
+          message: e instanceof Error ? e.message : 'Network error',
+        }));
+        return;
+      }
+    }
+  }
+
   async function handleSendNow() {
     if (!confirm(`Send "${campaign.name}" now?`)) return;
     setOpen(false);
-    setSendState({ phase: 'sending', sent: 0, failed: 0, total: 0, pct: 0, message: 'Connecting…' });
-
-    try {
-      const res = await fetch('/api/send/queue', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ campaign_id: campaign.id }),
-      });
-
-      if (!res.ok || !res.body) {
-        const text = await res.text().catch(() => `HTTP ${res.status}`);
-        setSendState(s => ({ ...s, phase: 'error', message: text.slice(0, 200) }));
-        return;
-      }
-
-      const reader = res.body.getReader();
-      const dec = new TextDecoder();
-      let buf = '';
-
-      while (true) {
-        const { done, value } = await reader.read();
-        if (done) break;
-        buf += dec.decode(value, { stream: true });
-        const parts = buf.split('\n\n');
-        buf = parts.pop() ?? '';
-        for (const part of parts) {
-          const evMatch   = part.match(/^event: (\w+)/m);
-          const dataMatch = part.match(/^data: (.+)$/m);
-          if (!evMatch || !dataMatch) continue;
-          let data: any;
-          try { data = JSON.parse(dataMatch[1]); } catch { continue; }
-          const ev = evMatch[1];
-
-          if (ev === 'progress') {
-            setSendState({
-              phase: 'sending',
-              sent: data.sent, failed: data.failed, total: data.total, pct: data.pct,
-              message: `Sent ${data.sent} of ${data.total}${data.failed ? ` · ${data.failed} failed` : ''}`,
-            });
-          } else if (ev === 'done') {
-            const msg = data.paused
-              ? `Daily limit reached — ${data.sent} sent. Remaining contacts queued for tomorrow.`
-              : `Done — ${data.sent} sent${data.failed ? `, ${data.failed} failed` : ''}`;
-            setSendState({
-              phase: 'done',
-              sent: data.sent, failed: data.failed, total: data.total, pct: 100,
-              message: msg,
-            });
-            setTimeout(() => {
-              setSendState(s => ({ ...s, phase: 'idle' }));
-              router.refresh();
-            }, 4000);
-          } else if (ev === 'warn') {
-            setSendState(s => ({ ...s, lastError: `Last error: ${data.error}` }));
-          } else if (ev === 'error') {
-            setSendState(s => ({ ...s, phase: 'error', message: data.error ?? 'Unknown error' }));
-          }
-        }
-      }
-    } catch (e: unknown) {
-      setSendState(s => ({
-        ...s, phase: 'error',
-        message: e instanceof Error ? e.message : 'Network error',
-      }));
-    }
+    await streamSend('Connecting…');
   }
 
   async function handleResume() {
     if (!confirm(`Resume sending "${campaign.name}"?`)) return;
     setOpen(false);
     // Resume = re-trigger the send queue (it will skip already-sent contacts)
-    setSendState({ phase: 'sending', sent: 0, failed: 0, total: 0, pct: 0, message: 'Resuming…' });
-
-    try {
-      const res = await fetch('/api/send/queue', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ campaign_id: campaign.id }),
-      });
-
-      if (!res.ok || !res.body) {
-        const text = await res.text().catch(() => `HTTP ${res.status}`);
-        setSendState(s => ({ ...s, phase: 'error', message: text.slice(0, 200) }));
-        return;
-      }
-
-      const reader = res.body.getReader();
-      const dec = new TextDecoder();
-      let buf = '';
-
-      while (true) {
-        const { done, value } = await reader.read();
-        if (done) break;
-        buf += dec.decode(value, { stream: true });
-        const parts = buf.split('\n\n');
-        buf = parts.pop() ?? '';
-        for (const part of parts) {
-          const evMatch = part.match(/^event: (\w+)/m);
-          const dataMatch = part.match(/^data: (.+)$/m);
-          if (!evMatch || !dataMatch) continue;
-          let data: any;
-          try { data = JSON.parse(dataMatch[1]); } catch { continue; }
-          const ev = evMatch[1];
-          if (ev === 'progress') {
-            setSendState({ phase: 'sending', sent: data.sent, failed: data.failed, total: data.total, pct: data.pct,
-              message: `Sent ${data.sent} of ${data.total}${data.failed ? ` · ${data.failed} failed` : ''}` });
-          } else if (ev === 'done') {
-            const msg2 = data.paused
-              ? `Daily limit reached — ${data.sent} sent. Remaining contacts queued for tomorrow.`
-              : `Done — ${data.sent} sent${data.failed ? `, ${data.failed} failed` : ''}`;
-            setSendState({ phase: 'done', sent: data.sent, failed: data.failed, total: data.total, pct: 100, message: msg2 });
-            setTimeout(() => { setSendState(s => ({ ...s, phase: 'idle' })); router.refresh(); }, 4000);
-          } else if (ev === 'warn') {
-            setSendState(s => ({ ...s, lastError: `Last error: ${data.error}` }));
-          } else if (ev === 'error') {
-            setSendState(s => ({ ...s, phase: 'error', message: data.error ?? 'Unknown error' }));
-          }
-        }
-      }
-    } catch (e: unknown) {
-      setSendState(s => ({ ...s, phase: 'error', message: e instanceof Error ? e.message : 'Network error' }));
-    }
+    await streamSend('Resuming…');
   }
 
   async function handleStatusChange(newStatus: string, label: string) {
