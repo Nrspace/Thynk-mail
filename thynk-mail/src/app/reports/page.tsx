@@ -186,7 +186,10 @@ export default function ReportsPage() {
       if (fromDate) params.set('from', fromDate);
       if (toDate)   params.set('to',   toDate);
     }
-    const r = await fetch(`/api/reports?${params}`).then(r => r.json());
+    // cache: 'no-store' — always hit the server for current numbers; without
+    // this the browser can serve a previously-cached response for the exact
+    // same URL instead of the latest open/click counts.
+    const r = await fetch(`/api/reports?${params}`, { cache: 'no-store' }).then(r => r.json());
     setTotals(r.totals);
     setDaily(r.daily ?? []);
     setMonthly(r.monthly ?? []);
@@ -198,6 +201,16 @@ export default function ReportsPage() {
   useEffect(() => {
     if (range !== 'custom') load();
   }, [range]);
+
+  // Refetch whenever this tab regains focus (e.g. the user checks another
+  // tab/app, an email gets opened elsewhere, then comes back here) so the
+  // numbers reflect activity that happened while the page was in the
+  // background instead of only ever refreshing on a hard reload.
+  useEffect(() => {
+    const onFocus = () => { if (range !== 'custom') load(); };
+    window.addEventListener('focus', onFocus);
+    return () => window.removeEventListener('focus', onFocus);
+  }, [range, load]);
 
   const selectedLabel = RANGE_OPTIONS.find(o => o.value === range)?.label ?? 'Current Year';
 
