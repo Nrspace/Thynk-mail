@@ -39,7 +39,13 @@ export async function GET(req: NextRequest) {
     if (log?.campaign_id) {
       try {
         await db.rpc('increment_campaign_opens', { cid: log.campaign_id });
-      } catch (_) { /* best-effort */ }
+      } catch (err) {
+        // Non-fatal — the open is already recorded on send_logs above, which
+        // is what every page in the app actually reads for reporting. This
+        // counter is kept as a convenience only; log so a broken/missing
+        // RPC function is visible instead of silently going unnoticed.
+        console.error('[track] increment_campaign_opens failed:', err);
+      }
     }
 
     // Log event
@@ -75,7 +81,9 @@ export async function GET(req: NextRequest) {
     if (log?.campaign_id) {
       try {
         await db.rpc('increment_campaign_clicks', { cid: log.campaign_id });
-      } catch (_) { /* best-effort */ }
+      } catch (err) {
+        console.error('[track] increment_campaign_clicks failed:', err);
+      }
     }
 
     // Log event
