@@ -22,7 +22,13 @@ export function addClickTracking(html: string, sendLogId: string, appUrl: string
     /href="(https?:\/\/[^"]+)"/g,
     (_, url) => {
       const encoded = encodeURIComponent(url);
-      return `href="${appUrl}/api/send/track?id=${sendLogId}&event=click&url=${encoded}"`;
+      // ses:no-track tells Amazon SES not to apply its own click-tracking
+      // rewrite/redirect on top of this link. Without it, SES's configuration-set
+      // tracking (open/click via TrackingOptions custom redirect domain) wraps
+      // our already-tracked link a second time, producing a broken nested
+      // /CL0/<our-tracking-url> link. SES strips this non-standard attribute
+      // before the email reaches the recipient, so it never appears in the inbox.
+      return `href="${appUrl}/api/send/track?id=${sendLogId}&event=click&url=${encoded}" ses:no-track`;
     }
   );
 }
@@ -35,7 +41,7 @@ export function addUnsubscribeFooter(
   const footer = `
 <div style="text-align:center;padding:24px 0;font-family:sans-serif;font-size:12px;color:#888888;">
   <p>You received this email because you subscribed to our list.</p>
-  <p><a href="${appUrl}/unsubscribe?id=${sendLogId}" style="color:#888888;">Unsubscribe</a></p>
+  <p><a href="${appUrl}/unsubscribe?id=${sendLogId}" style="color:#888888;" ses:no-track>Unsubscribe</a></p>
 </div>`;
   return html.replace('</body>', `${footer}</body>`);
 }
