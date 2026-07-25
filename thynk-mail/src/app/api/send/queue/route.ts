@@ -10,6 +10,25 @@ export const maxDuration = 300;
 const RATE_DELAY_MS = 400; // 400ms × 185 contacts = 74s of delays; leaves plenty of room for SMTP time
 const sleep = (ms: number) => new Promise(r => setTimeout(r, ms));
 
+// Supabase/PostgREST sends .in(column, values) as a query string, e.g.
+// ?id=in.(uuid1,uuid2,...). At 10,000+ contacts that URL can exceed the
+// server/proxy URL-length limit and the request fails outright before any
+// email is sent. Running the same query in chunks avoids that ceiling
+// entirely, at the cost of a few extra sequential round trips.
+const DB_IN_CHUNK_SIZE = 300;
+async function runInChunks<T, R>(
+  items: T[],
+  size: number,
+  fn: (chunk: T[]) => Promise<R[]>
+): Promise<R[]> {
+  const results: R[] = [];
+  for (let i = 0; i < items.length; i += size) {
+    const chunk = items.slice(i, i + size);
+    results.push(...(await fn(chunk)));
+  }
+  return results;
+}
+
 function makeStream() {
   const { readable, writable } = new TransformStream();
   const writer = writable.getWriter();
@@ -153,20 +172,27 @@ export async function POST(req: NextRequest) {
       const contactIds = Array.from(new Set((clRows ?? []).map((r: any) => r.contact_id)));
       if (!contactIds.length) return fail('No contacts in selected lists');
 
-      const { data: contacts, error: cxErr } = await db
-        .from('contacts').select('*').in('id', contactIds).eq('is_subscribed', true);
-      if (cxErr) return fail(`Failed to load contacts: ${cxErr.message}`);
+      const contacts = await runInChunks(contactIds, DB_IN_CHUNK_SIZE, async (chunk) => {
+        const { data, error } = await db
+          .from('contacts').select('*').in('id', chunk).eq('is_subscribed', true);
+        if (error) throw new Error(`Failed to load contacts: ${error.message}`);
+        return data ?? [];
+      });
 
       // Filter suppressions
       let suppressed = new Set<string>();
-      if ((contacts ?? []).length > 0 && campaign.team_id) {
-        const { data: sx } = await db.from('suppressions').select('email')
-          .eq('team_id', campaign.team_id)
-          .in('email', (contacts ?? []).map((c: Contact) => c.email));
-        suppressed = new Set((sx ?? []).map((s: any) => s.email));
+      if (contacts.length > 0 && campaign.team_id) {
+        const emails = contacts.map((c: Contact) => c.email);
+        const suppressionRows = await runInChunks(emails, DB_IN_CHUNK_SIZE, async (chunk) => {
+          const { data, error } = await db.from('suppressions').select('email')
+            .eq('team_id', campaign.team_id).in('email', chunk);
+          if (error) throw new Error(`Failed to check suppressions: ${error.message}`);
+          return data ?? [];
+        });
+        suppressed = new Set(suppressionRows.map((s: any) => s.email));
       }
 
-      const eligible = (contacts ?? []).filter((c: Contact) => !suppressed.has(c.email));
+      const eligible = contacts.filter((c: Contact) => !suppressed.has(c.email));
       if (!eligible.length) return fail('All contacts are suppressed or unsubscribed');
 
       await db.from('campaigns').update({ total_recipients: eligible.length }).eq('id', campaign_id);
@@ -195,24 +221,80 @@ export async function POST(req: NextRequest) {
           account_id: rawAccountIds[0],
           status: 'queued',
         }));
-        const { data: newLogs, error: logsErr } = await db
-          .from('send_logs').insert(logRows).select('id, contact_id, status');
-        if (logsErr) return fail(`Failed to create send logs: ${logsErr.message}`);
-        logs = [...logs, ...(newLogs ?? [])];
+        // Insert in chunks too — a single 10,000-row insert risks hitting
+        // Supabase's request-size/timeout limits.
+        const newLogs = await runInChunks(logRows, DB_IN_CHUNK_SIZE, async (chunk) => {
+          const { data, error } = await db.from('send_logs').insert(chunk).select('id, contact_id, status');
+          if (error) throw new Error(`Failed to create send logs: ${error.message}`);
+          return data ?? [];
+        });
+        logs = [...logs, ...newLogs];
       }
 
       // Resume support: start sentCount from already-sent emails
       let sentCount = alreadySentIds.size;
       let failCount = 0;
       const total = eligible.length;
-      emit('progress', { sent: sentCount, failed: 0, total, pct: Math.round((sentCount / total) * 100) });
+
+      // Large-list batch labeling — purely organizational/reporting, not a
+      // change in pacing. For 5,000+ contacts we group the send into 2
+      // (5k–9,999) or 3 (10,000+) named batches so progress reads as
+      // "Batch 2 of 3" instead of one long undifferentiated number. Batches
+      // run automatically back-to-back with no pause between them; the
+      // existing 45s time-budget chunk/continue mechanism below (renamed to
+      // the 'chunk' event to avoid confusion with these named batches)
+      // still keeps each Vercel invocation safely under the execution-time
+      // limit regardless of batch size.
+      const numBatches = total >= 10000 ? 3 : total >= 5000 ? 2 : 1;
+      const batchSize = Math.ceil(total / numBatches);
+      const batchNumberFor = (doneCount: number) => Math.min(numBatches, Math.floor(doneCount / batchSize) + 1);
+      let lastAnnouncedBatch = 0;
+      const announceBatchIfNeeded = (doneCount: number) => {
+        if (numBatches <= 1) return;
+        const b = batchNumberFor(doneCount);
+        if (b !== lastAnnouncedBatch) {
+          lastAnnouncedBatch = b;
+          emit('batch_start', {
+            batch: b, totalBatches: numBatches,
+            rangeStart: (b - 1) * batchSize + 1,
+            rangeEnd: Math.min(b * batchSize, total),
+            total,
+          });
+        }
+      };
+
+      emit('progress', {
+        sent: sentCount, failed: 0, total, pct: Math.round((sentCount / total) * 100),
+        batch: batchNumberFor(sentCount), totalBatches: numBatches,
+      });
 
       // ── Send loop with multi-account rotation ────────────────────────────
       let consecutiveFails = 0;
 
+      // Vercel serverless functions have a hard execution-time ceiling
+      // (this route's maxDuration=300s is itself already the max on most
+      // plans, and some plans cap even lower). For 1000+ contacts, the
+      // combined per-contact delay + real SMTP/SES send time reliably
+      // exceeds that limit, which gets this function killed mid-send —
+      // that's what was showing up as a failed/stuck campaign. Instead of
+      // trying to send everyone in one invocation, we cap how long a single
+      // invocation runs and stop cleanly with time to spare; the client
+      // then calls this endpoint again to process the next chunk. Because
+      // already-sent contacts are skipped on every call (see "Resume
+      // support" above), this is always safe to repeat.
+      const BATCH_TIME_BUDGET_MS = 45_000;
+      const batchStart = Date.now();
+      let batchStoppedEarly = false;
+
       for (const log of logs ?? []) {
+        if (Date.now() - batchStart > BATCH_TIME_BUDGET_MS) {
+          batchStoppedEarly = true;
+          break;
+        }
         const contact = eligible.find((c: Contact) => c.id === log.contact_id);
         if (!contact) continue;
+
+        announceBatchIfNeeded(sentCount + failCount);
 
         // Pick next available account
         const account = rotator.next();
@@ -302,9 +384,30 @@ export async function POST(req: NextRequest) {
           sent: sentCount, failed: failCount, total,
           pct: Math.round(((sentCount + failCount) / total) * 100),
           lastError: result.success ? undefined : result.error,
+          batch: batchNumberFor(sentCount + failCount), totalBatches: numBatches,
         });
 
         await sleep(RATE_DELAY_MS);
+      }
+
+      // Time budget hit with contacts still remaining — stop here, keep the
+      // campaign in 'sending' state, and let the client re-invoke this
+      // endpoint to process the next chunk. This is a lower-level execution
+      // detail, distinct from the named batches above — a single named
+      // batch of 2,500 contacts might span several of these 'chunk' stops.
+      if (batchStoppedEarly) {
+        await db.from('campaigns').update({
+          status: 'sending',
+          sent_count: sentCount,
+        }).eq('id', campaign_id);
+        emit('chunk', {
+          sent: sentCount, failed: failCount, total,
+          pct: Math.round(((sentCount + failCount) / total) * 100),
+          message: `Sent ${sentCount} of ${total} so far — continuing…`,
+          batch: batchNumberFor(sentCount + failCount), totalBatches: numBatches,
+        });
+        done();
+        return;
       }
 
       // Finalize
@@ -315,7 +418,7 @@ export async function POST(req: NextRequest) {
         sent_count: sentCount,
       }).eq('id', campaign_id);
 
-      emit('done', { success: true, sent: sentCount, failed: failCount, total });
+      emit('done', { success: true, sent: sentCount, failed: failCount, total, totalBatches: numBatches });
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : String(err);
       console.error('[send/queue]', msg);
