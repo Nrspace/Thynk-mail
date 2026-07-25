@@ -6,6 +6,11 @@ import { getCurrentUser, getActiveProjectId } from '@/lib/session';
 
 interface Props { params: { id: string } }
 
+// Always render fresh — never statically or client-router-cache this page,
+// since it shows live open/click counts that can change at any moment.
+export const dynamic = 'force-dynamic';
+export const revalidate = 0;
+
 export default async function CampaignDetailPage({ params }: Props) {
   const user = await getCurrentUser();
   if (!user) redirect('/login');
@@ -22,22 +27,52 @@ export default async function CampaignDetailPage({ params }: Props) {
 
   if (!campaign) notFound();
 
-  const openRate = campaign.sent_count > 0
-    ? ((campaign.open_count / campaign.sent_count) * 100).toFixed(1)
+  // SINGLE SOURCE OF TRUTH: send_logs — same approach as the Dashboard,
+  // Reports, and Campaigns list pages, so all four always agree. This
+  // replaces campaign.open_count/click_count/bounce_count, which were kept
+  // in sync via a Postgres RPC call (increment_campaign_opens/clicks) that
+  // fails silently if it errors — e.g. if that function was never created
+  // on this Supabase project — leaving those columns stuck at stale values
+  // while send_logs itself was always being updated correctly.
+  let sentCount = 0, openCount = 0, clickCount = 0, bounceCount = 0;
+  {
+    let pg = 0;
+    const pgSize = 1000;
+    while (true) {
+      const { data: batch } = await db
+        .from('send_logs')
+        .select('status')
+        .eq('campaign_id', campaign.id)
+        .not('status', 'eq', 'queued')
+        .range(pg * pgSize, (pg + 1) * pgSize - 1);
+      for (const l of (batch ?? [])) {
+        const s = l.status;
+        if (['sent', 'delivered', 'opened', 'clicked'].includes(s)) sentCount++;
+        if (s === 'opened' || s === 'clicked') openCount++;
+        if (s === 'clicked') clickCount++;
+        if (s === 'bounced') bounceCount++;
+      }
+      if ((batch ?? []).length < pgSize) break;
+      pg++;
+    }
+  }
+
+  const openRate = sentCount > 0
+    ? ((openCount / sentCount) * 100).toFixed(1)
     : '0.0';
-  const clickRate = campaign.sent_count > 0
-    ? ((campaign.click_count / campaign.sent_count) * 100).toFixed(1)
+  const clickRate = sentCount > 0
+    ? ((clickCount / sentCount) * 100).toFixed(1)
     : '0.0';
-  const bounceRate = campaign.sent_count > 0
-    ? ((campaign.bounce_count / campaign.sent_count) * 100).toFixed(1)
+  const bounceRate = sentCount > 0
+    ? ((bounceCount / sentCount) * 100).toFixed(1)
     : '0.0';
 
   const stats = [
     { label: 'Recipients',  value: campaign.total_recipients ?? 0, icon: Users,         color: 'text-blue-600',   bg: 'bg-blue-50' },
-    { label: 'Sent',        value: campaign.sent_count ?? 0,        icon: Send,          color: 'text-teal-600',   bg: 'bg-teal-50' },
-    { label: 'Opens',       value: `${campaign.open_count ?? 0} (${openRate}%)`,  icon: Eye,     color: 'text-green-600',  bg: 'bg-green-50' },
-    { label: 'Clicks',      value: `${campaign.click_count ?? 0} (${clickRate}%)`, icon: MousePointer, color: 'text-purple-600', bg: 'bg-purple-50' },
-    { label: 'Bounces',     value: `${campaign.bounce_count ?? 0} (${bounceRate}%)`, icon: AlertCircle, color: 'text-red-600', bg: 'bg-red-50' },
+    { label: 'Sent',        value: sentCount,        icon: Send,          color: 'text-teal-600',   bg: 'bg-teal-50' },
+    { label: 'Opens',       value: `${openCount} (${openRate}%)`,  icon: Eye,     color: 'text-green-600',  bg: 'bg-green-50' },
+    { label: 'Clicks',      value: `${clickCount} (${clickRate}%)`, icon: MousePointer, color: 'text-purple-600', bg: 'bg-purple-50' },
+    { label: 'Bounces',     value: `${bounceCount} (${bounceRate}%)`, icon: AlertCircle, color: 'text-red-600', bg: 'bg-red-50' },
   ];
 
   const statusColors: Record<string, string> = {
