@@ -1,5 +1,5 @@
 'use client';
-import { useState } from 'react';
+import { useState, useRef, useEffect } from 'react';
 import { useRouter } from 'next/navigation';
 import { ArrowLeft, Save, Plus, Trash2, MoveUp, MoveDown, Type, Image, Square, Minus, AlignLeft, Code2, Download } from 'lucide-react';
 import Link from 'next/link';
@@ -372,6 +372,36 @@ export default function NewTemplatePage() {
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [tab, setTab] = useState<'design' | 'html'>('design');
 
+  // Right panel (block editor) width — draggable via the handle rendered
+  // just to its left. Persists per browser tab only (not saved with the template).
+  const [rightPanelWidth, setRightPanelWidth] = useState(240);
+  const isResizingRef = useRef(false);
+
+  useEffect(() => {
+    const handleMouseMove = (e: MouseEvent) => {
+      if (!isResizingRef.current) return;
+      const newWidth = window.innerWidth - e.clientX;
+      setRightPanelWidth(Math.min(600, Math.max(220, newWidth)));
+    };
+    const stopResizing = () => {
+      isResizingRef.current = false;
+      document.body.style.cursor = '';
+      document.body.style.userSelect = '';
+    };
+    window.addEventListener('mousemove', handleMouseMove);
+    window.addEventListener('mouseup', stopResizing);
+    return () => {
+      window.removeEventListener('mousemove', handleMouseMove);
+      window.removeEventListener('mouseup', stopResizing);
+    };
+  }, []);
+
+  const startResizing = () => {
+    isResizingRef.current = true;
+    document.body.style.cursor = 'col-resize';
+    document.body.style.userSelect = 'none';
+  };
+
   const selectedBlock = blocks.find(b => b.id === selectedId) ?? null;
 
   const addBlock = (type: BlockType) => {
@@ -520,8 +550,17 @@ export default function NewTemplatePage() {
           )}
         </div>
 
+        {/* Drag handle — resizes the right panel */}
+        <div
+          onMouseDown={startResizing}
+          title="Drag to resize"
+          style={{ width: 6, marginLeft: -3, marginRight: -3, cursor: 'col-resize', background: 'transparent', flexShrink: 0, zIndex: 1, position: 'relative' }}
+          onMouseEnter={e => { (e.currentTarget as HTMLDivElement).style.background = '#14b8a680'; }}
+          onMouseLeave={e => { (e.currentTarget as HTMLDivElement).style.background = 'transparent'; }}
+        />
+
         {/* Right — Block editor */}
-        <div style={{ width: 240, borderLeft: '1px solid #e5e7eb', background: '#fff', overflowY: 'auto', flexShrink: 0 }}>
+        <div style={{ width: rightPanelWidth, borderLeft: '1px solid #e5e7eb', background: '#fff', overflowY: 'auto', flexShrink: 0 }}>
           {selectedBlock ? (
             <>
               <div style={{ padding: '10px 14px', borderBottom: '1px solid #e5e7eb', background: '#f9fafb', display: 'flex', alignItems: 'center', gap: 6 }}>
