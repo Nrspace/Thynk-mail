@@ -2,6 +2,14 @@ import { NextRequest, NextResponse } from 'next/server';
 import { createServerClient } from '@/lib/supabase';
 import { requireProjectContext } from '@/lib/api-auth';
 
+// Always execute fresh — never let Next.js statically cache or memoize this
+// response. Without this, a route handler with no explicit config can be
+// cached longer than expected, serving stale open/click numbers even though
+// the query itself (see below) is written to always read live data.
+export const dynamic = 'force-dynamic';
+export const revalidate = 0;
+export const fetchCache = 'force-no-store';
+
 /**
  * SINGLE SOURCE OF TRUTH: send_logs
  * ===================================
