@@ -242,8 +242,10 @@ export default async function DashboardPage({ searchParams }: Props) {
           ) : (
             <div className="space-y-3">
               {d.accounts.map((a: any) => {
-                const pct = a.daily_limit > 0
-                  ? Math.min(100, Math.round((a.total_sent / a.daily_limit) * 100))
+                const dailyLimit = a.daily_limit ?? 0;
+                const totalSent  = a.total_sent ?? 0;
+                const pct = dailyLimit > 0
+                  ? Math.min(100, Math.round((totalSent / dailyLimit) * 100))
                   : 0;
                 const providerColors: Record<string, string> = {
                   brevo: '#0B96F5', gmail: '#EA4335', zoho: '#1A73E8',
@@ -261,7 +263,7 @@ export default async function DashboardPage({ searchParams }: Props) {
                           style={{ background: `${pc}18`, color: pc }}>{a.provider}</span>
                       </div>
                       <span className="text-xs themed-muted flex-shrink-0 ml-2">
-                        {a.total_sent.toLocaleString()}/{a.daily_limit.toLocaleString()}
+                        {totalSent.toLocaleString()}/{dailyLimit.toLocaleString()}
                       </span>
                     </div>
                     <div className="h-1.5 rounded-full overflow-hidden" style={{ background: 'var(--card-border)' }}>
