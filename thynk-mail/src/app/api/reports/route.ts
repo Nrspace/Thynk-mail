@@ -11,10 +11,18 @@ export const revalidate = 0;
 export const fetchCache = 'force-no-store';
 
 /**
- * SINGLE SOURCE OF TRUTH: send_logs
- * ===================================
- * All numbers (totals, charts, account stats, campaign breakdown) come from
- * send_logs, not from campaigns.sent_count. This guarantees every tab agrees.
+ * Data sources
+ * ============
+ * Date-scoped totals, the daily/monthly charts, and per-account stats are
+ * computed live from send_logs, since only send_logs has per-event
+ * timestamps to filter/bucket by date and account.
+ *
+ * The per-campaign table (sent/opened/clicked/bounced for each campaign)
+ * reads directly from campaigns.sent_count/open_count/click_count/
+ * bounce_count instead — the same columns used by the Campaigns list,
+ * Dashboard, and campaign detail page — so a given campaign's figures are
+ * identical everywhere in the app. These are lifetime totals and are not
+ * affected by the selected date-range filter.
  *
  * Status funnel: queued → sent → [delivered] → opened → clicked
  *   Sent     = status IN (sent, delivered, opened, clicked)
@@ -163,24 +171,16 @@ export async function GET(req: NextRequest) {
     ...(accountMap[a.id] ?? { sent: 0, delivered: 0, opened: 0, clicked: 0, bounced: 0, failed: 0 }),
   }));
 
-  // ── Campaign stats from send_logs (keyed by campaign_id) ──
-  const campaignLogMap: Record<string, { sent: number; opened: number; clicked: number; bounced: number }> = {};
-  for (const log of logs) {
-    const cid = log.campaign_id as string;
-    if (!cid) continue;
-    if (!campaignLogMap[cid]) campaignLogMap[cid] = { sent: 0, opened: 0, clicked: 0, bounced: 0 };
-    if (isSent(log.status))               campaignLogMap[cid].sent++;
-    if (isOpened(log.status))             campaignLogMap[cid].opened++;
-    if (log.status === 'clicked')         campaignLogMap[cid].clicked++;
-    if (log.status === 'bounced')         campaignLogMap[cid].bounced++;
-  }
-
   // ── Campaign list — NO date filter, show ALL campaigns (same as /campaigns page) ──
-  // FIX: old code filtered by created_at within the date range, hiding campaigns
-  //      that were created before the range but still relevant.
+  // Sent/open/click/bounce figures come straight from the campaigns table's
+  // own counters, same as the Campaigns list, Dashboard, and campaign detail
+  // page, so a given campaign always shows the same numbers everywhere.
+  // Note: unlike the daily/monthly/account breakdowns above (which are
+  // scoped to the selected date range and need send_logs' timestamps),
+  // these are lifetime totals for the campaign regardless of the range filter.
   const { data: campaignRows } = await db
     .from('campaigns')
-    .select('id, name, status, created_at, sent_at')
+    .select('id, name, status, created_at, sent_at, sent_count, open_count, click_count, bounce_count')
     .eq('team_id', projectId)
     .order('created_at', { ascending: false });
 
@@ -190,11 +190,10 @@ export async function GET(req: NextRequest) {
     status:       c.status,
     created_at:   c.created_at,
     sent_at:      c.sent_at,
-    // Use send_logs counts for the selected date range
-    sent_count:   campaignLogMap[c.id]?.sent    ?? 0,
-    open_count:   campaignLogMap[c.id]?.opened  ?? 0,
-    click_count:  campaignLogMap[c.id]?.clicked ?? 0,
-    bounce_count: campaignLogMap[c.id]?.bounced ?? 0,
+    sent_count:   c.sent_count   ?? 0,
+    open_count:   c.open_count   ?? 0,
+    click_count:  c.click_count  ?? 0,
+    bounce_count: c.bounce_count ?? 0,
   }));
 
   return NextResponse.json({

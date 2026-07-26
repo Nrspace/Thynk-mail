@@ -4,13 +4,50 @@ import Link from 'next/link';
 import { redirect } from 'next/navigation';
 import { getCurrentUser, getActiveProjectId } from '@/lib/session';
 import DashboardCharts from '@/components/dashboard/DashboardCharts';
+import DashboardRangeSelect, { RANGE_OPTIONS } from '@/components/dashboard/DashboardRangeSelect';
 
-async function getDashboardData(teamId: string) {
+// Mirrors the same date-range logic used by /api/reports, plus a "7" (Last
+// 7 Days) option, which is the dashboard's default.
+function getDateRange(rangeParam: string, from?: string, to?: string): { since: Date; until: Date } {
+  const now = new Date();
+  const until = to ? new Date(to + 'T23:59:59') : new Date();
+
+  if (rangeParam === 'custom' && from) {
+    return { since: new Date(from + 'T00:00:00'), until };
+  }
+
+  let since: Date;
+  switch (rangeParam) {
+    case 'today':
+      since = new Date(now.getFullYear(), now.getMonth(), now.getDate(), 0, 0, 0);
+      break;
+    case 'week': {
+      const day = now.getDay();
+      const diff = day === 0 ? -6 : 1 - day;
+      since = new Date(now.getFullYear(), now.getMonth(), now.getDate() + diff, 0, 0, 0);
+      break;
+    }
+    case '15':  since = new Date(now); since.setDate(since.getDate() - 15);  break;
+    case '30':  since = new Date(now); since.setDate(since.getDate() - 30);  break;
+    case '90':  since = new Date(now); since.setDate(since.getDate() - 90);  break;
+    case '180': since = new Date(now); since.setDate(since.getDate() - 180); break;
+    case 'year':
+      since = new Date(now.getFullYear(), 0, 1);
+      break;
+    case '7':
+    default:
+      since = new Date(now); since.setDate(since.getDate() - 7);
+      break;
+  }
+  return { since, until };
+}
+
+async function getDashboardData(teamId: string, rangeParam: string, from?: string, to?: string) {
   const db = createServerClient();
 
-  const now          = new Date();
-  const startOfYear  = new Date(Date.UTC(now.getUTCFullYear(), 0, 1)).toISOString();
-  const startOfMonth = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), 1)).toISOString();
+  const { since, until } = getDateRange(rangeParam, from, to);
+  const sinceISO = since.toISOString();
+  const untilISO = until.toISOString();
 
   // ── 1. Email accounts ──────────────────────────────────────────────────────
   const { data: accountRows } = await db
@@ -32,47 +69,45 @@ async function getDashboardData(teamId: string) {
     db.from('contacts').select('id', { count: 'exact' }).eq('team_id', teamId).eq('is_subscribed', true),
   ]);
 
-  // ── 3. YTD totals — account-scoped send_logs for this team ────────────────
-  // Used ONLY for the top stat cards (Sent Year, Open Rate, etc.) and month strip.
+  // ── 3. Totals for the selected range — account-scoped send_logs ──────────
+  // Used for the top stat cards (Sent, Opened, Open Rate, etc.).
   // Paginated to avoid the Supabase 1000-row default cap.
   let totalSent = 0, totalOpened = 0, totalClicked = 0, totalBounced = 0, totalFailed = 0;
-  let monthSent = 0, monthOpened = 0;
   const accountSentMap: Record<string, number> = {};
 
   if (teamAccountIds.length > 0) {
-    let ytdPage = 0;
+    let pg = 0;
     const pageSize = 1000;
     while (true) {
       const { data: batch } = await db
         .from('send_logs')
-        .select('status, sent_at, created_at, account_id')
+        .select('status, account_id')
         .in('account_id', teamAccountIds)
-        .gte('created_at', startOfYear)
+        .gte('created_at', sinceISO)
+        .lte('created_at', untilISO)
         .not('status', 'eq', 'queued')
-        .range(ytdPage * pageSize, (ytdPage + 1) * pageSize - 1);
+        .range(pg * pageSize, (pg + 1) * pageSize - 1);
 
       const rows = batch ?? [];
       for (const log of rows) {
-        const sentAt   = ((log.sent_at ?? log.created_at) ?? '') as string;
-        const isMonth  = sentAt >= startOfMonth;
         const isSent   = ['sent', 'delivered', 'opened', 'clicked'].includes(log.status);
         const isOpened = log.status === 'opened' || log.status === 'clicked';
         const isClick  = log.status === 'clicked';
         const isBounce = log.status === 'bounced';
         const isFail   = log.status === 'failed';
 
-        if (isSent)   { totalSent++;   if (isMonth) monthSent++;   }
-        if (isOpened) { totalOpened++; if (isMonth) monthOpened++; }
-        if (isClick)    totalClicked++;
-        if (isBounce)   totalBounced++;
-        if (isFail)     totalFailed++;
+        if (isSent)   totalSent++;
+        if (isOpened) totalOpened++;
+        if (isClick)  totalClicked++;
+        if (isBounce) totalBounced++;
+        if (isFail)   totalFailed++;
 
         if (isSent && log.account_id) {
           accountSentMap[log.account_id] = (accountSentMap[log.account_id] ?? 0) + 1;
         }
       }
       if (rows.length < pageSize) break;
-      ytdPage++;
+      pg++;
     }
   }
 
@@ -81,53 +116,22 @@ async function getDashboardData(teamId: string) {
     total_sent: accountSentMap[a.id] ?? 0,
   }));
 
-  // ── 4. Recent campaigns — EXACT same query as Campaigns page ──────────────
-  // Fetch 7 most recent campaigns, then fetch ALL their send_logs with NO
-  // account filter and NO date filter — identical to src/app/campaigns/page.tsx.
-  // Paginated to handle campaigns with >1000 send_log rows.
+  // ── 4. Recent campaigns — pulls straight from the campaigns table's own
+  // sent_count/open_count/click_count/bounce_count columns, same as the
+  // Campaigns list and campaign detail page, so all three always agree.
   const { data: recentRows } = await db
     .from('campaigns')
-    .select('id, name, status, created_at, sent_at')
+    .select('id, name, status, created_at, sent_at, sent_count, open_count, click_count, bounce_count')
     .eq('team_id', teamId)
     .order('created_at', { ascending: false })
     .limit(7);
 
-  const recentIds = (recentRows ?? []).map((c: any) => c.id);
-  const campaignStatsMap: Record<string, { sent: number; opened: number; clicked: number; bounced: number }> = {};
-
-  if (recentIds.length > 0) {
-    let campPage = 0;
-    const pageSize = 1000;
-    while (true) {
-      const { data: batch } = await db
-        .from('send_logs')
-        .select('campaign_id, status')
-        .in('campaign_id', recentIds)
-        .not('status', 'eq', 'queued')
-        .range(campPage * pageSize, (campPage + 1) * pageSize - 1);
-
-      const rows = batch ?? [];
-      for (const l of rows) {
-        if (!campaignStatsMap[l.campaign_id]) {
-          campaignStatsMap[l.campaign_id] = { sent: 0, opened: 0, clicked: 0, bounced: 0 };
-        }
-        const s = l.status;
-        if (['sent', 'delivered', 'opened', 'clicked'].includes(s)) campaignStatsMap[l.campaign_id].sent++;
-        if (s === 'opened' || s === 'clicked') campaignStatsMap[l.campaign_id].opened++;
-        if (s === 'clicked') campaignStatsMap[l.campaign_id].clicked++;
-        if (s === 'bounced') campaignStatsMap[l.campaign_id].bounced++;
-      }
-      if (rows.length < pageSize) break;
-      campPage++;
-    }
-  }
-
   const recentCampaigns = (recentRows ?? []).map((c: any) => ({
     ...c,
-    sent_count:   campaignStatsMap[c.id]?.sent    ?? 0,
-    open_count:   campaignStatsMap[c.id]?.opened  ?? 0,
-    click_count:  campaignStatsMap[c.id]?.clicked ?? 0,
-    bounce_count: campaignStatsMap[c.id]?.bounced ?? 0,
+    sent_count:   c.sent_count   ?? 0,
+    open_count:   c.open_count   ?? 0,
+    click_count:  c.click_count  ?? 0,
+    bounce_count: c.bounce_count ?? 0,
   }));
 
   return {
@@ -139,9 +143,6 @@ async function getDashboardData(teamId: string) {
     openRate:    totalSent > 0 ? +((totalOpened  / totalSent) * 100).toFixed(1) : 0,
     clickRate:   totalSent > 0 ? +((totalClicked / totalSent) * 100).toFixed(1) : 0,
     bounceRate:  totalSent > 0 ? +((totalBounced / totalSent) * 100).toFixed(1) : 0,
-    monthSent,
-    monthOpened,
-    monthOpenRate: monthSent > 0 ? +((monthOpened / monthSent) * 100).toFixed(1) : 0,
     accounts: accountsWithSent,
     recentCampaigns,
   };
@@ -149,15 +150,19 @@ async function getDashboardData(teamId: string) {
 
 export const dynamic = 'force-dynamic';
 
-export default async function DashboardPage() {
+interface Props {
+  searchParams: { range?: string; from?: string; to?: string };
+}
+
+export default async function DashboardPage({ searchParams }: Props) {
   const user = await getCurrentUser();
   if (!user) redirect('/login');
   const projectId = await getActiveProjectId(user);
   if (!projectId) redirect('/projects');
 
-  const d = await getDashboardData(projectId);
-  const currentYear  = new Date().getFullYear();
-  const currentMonth = new Date().toLocaleString('default', { month: 'long' });
+  const range = searchParams.range ?? '7'; // default: Last 7 Days
+  const d = await getDashboardData(projectId, range, searchParams.from, searchParams.to);
+  const selectedLabel = RANGE_OPTIONS.find(o => o.value === range)?.label ?? 'Last 7 Days';
 
   const statusColors: Record<string, string> = {
     sent: 'badge-green', sending: 'badge-blue', scheduled: 'badge-yellow',
@@ -171,11 +176,12 @@ export default async function DashboardPage() {
         <div>
           <h1 className="text-2xl font-semibold themed-heading">Dashboard</h1>
           <p className="text-sm mt-1 themed-muted">
-            {currentMonth} {currentYear} overview ·{' '}
-            <span className="themed-brand font-medium">Current Year</span>
+            Overview ·{' '}
+            <span className="themed-brand font-medium">{selectedLabel}</span>
           </p>
         </div>
         <div className="flex items-center gap-3">
+          <DashboardRangeSelect currentRange={range} />
           <Link href="/email-status" className="btn-secondary"><Search size={15} /> Email Status</Link>
           <Link href="/campaigns/new" className="btn-primary"><Send size={15} /> New Campaign</Link>
         </div>
@@ -187,7 +193,7 @@ export default async function DashboardPage() {
           { label: 'Campaigns',   value: d.totalCampaigns,  icon: Send,         color: 'text-teal-600',   bg: 'bg-teal-50'   },
           { label: 'Active',      value: d.activeCampaigns, icon: TrendingUp,   color: 'text-blue-600',   bg: 'bg-blue-50'   },
           { label: 'Contacts',    value: d.totalContacts,   icon: Users,        color: 'text-purple-600', bg: 'bg-purple-50', title: `${d.subscribedContacts} subscribed` },
-          { label: 'Sent (Year)', value: d.totalSent,       icon: Mail,         color: 'text-orange-600', bg: 'bg-orange-50' },
+          { label: `Sent (${selectedLabel})`, value: d.totalSent, icon: Mail,   color: 'text-orange-600', bg: 'bg-orange-50' },
           { label: 'Opened',      value: d.totalOpened,     icon: CheckCircle,  color: 'text-green-600',  bg: 'bg-green-50'  },
           { label: 'Open Rate',   value: `${d.openRate}%`,  icon: BarChart3,    color: 'text-indigo-600', bg: 'bg-indigo-50' },
           { label: 'Bounced',     value: d.totalBounced,    icon: AlertCircle,  color: 'text-red-600',    bg: 'bg-red-50'    },
@@ -202,27 +208,6 @@ export default async function DashboardPage() {
             </p>
             <p className="text-xs mt-0.5 leading-tight themed-muted">{label}</p>
             {title && <p className="text-xs themed-muted opacity-60">{title}</p>}
-          </div>
-        ))}
-      </div>
-
-      {/* This Month strip */}
-      <div className="grid grid-cols-3 gap-4 mb-6">
-        {[
-          { label: `${currentMonth} — Sent`,      value: d.monthSent.toLocaleString(),   sub: 'This month',                   color: '#14b8a6' },
-          { label: `${currentMonth} — Opened`,    value: d.monthOpened.toLocaleString(), sub: 'This month',                   color: '#6366f1' },
-          { label: `${currentMonth} — Open Rate`, value: `${d.monthOpenRate}%`,           sub: `vs. year avg ${d.openRate}%`, color: '#a855f7' },
-        ].map(s => (
-          <div key={s.label} className="card px-5 py-4 flex items-center gap-4">
-            <div className="w-10 h-10 rounded-xl flex items-center justify-center flex-shrink-0"
-              style={{ background: `${s.color}18` }}>
-              <div className="w-3 h-3 rounded-full" style={{ background: s.color }} />
-            </div>
-            <div>
-              <p className="text-2xl font-bold" style={{ color: s.color }}>{s.value}</p>
-              <p className="text-xs mt-0.5 themed-muted">{s.label}</p>
-              <p className="text-xs themed-muted opacity-60">{s.sub}</p>
-            </div>
           </div>
         ))}
       </div>
@@ -296,7 +281,6 @@ export default async function DashboardPage() {
         <div className="flex items-center justify-between px-6 py-4 themed-border-b">
           <h2 className="font-semibold themed-heading">
             Recent Campaigns
-            <span className="ml-2 text-xs font-normal themed-muted">({currentYear})</span>
           </h2>
           <Link href="/campaigns" className="text-sm themed-link hover:underline flex items-center gap-1">
             View all <ArrowRight size={12} />

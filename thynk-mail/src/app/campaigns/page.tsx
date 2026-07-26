@@ -43,37 +43,6 @@ export default async function CampaignsPage() {
 
   const rows = data ?? [];
 
-  // Build send-log stats map
-  const campaignIds = rows.map((c: any) => c.id);
-  const logCountMap: Record<string, { sent: number; opened: number; clicked: number; bounced: number }> = {};
-
-  if (campaignIds.length > 0) {
-    // Paginated fetch — avoid Supabase's 1000-row default cap
-    let pg = 0;
-    const pgSize = 1000;
-    while (true) {
-      const { data: batch } = await db
-        .from('send_logs')
-        .select('campaign_id, status')
-        .in('campaign_id', campaignIds)
-        .not('status', 'eq', 'queued')
-        .range(pg * pgSize, (pg + 1) * pgSize - 1);
-
-      for (const l of (batch ?? [])) {
-        if (!logCountMap[l.campaign_id]) {
-          logCountMap[l.campaign_id] = { sent: 0, opened: 0, clicked: 0, bounced: 0 };
-        }
-        const s = l.status;
-        if (['sent', 'delivered', 'opened', 'clicked'].includes(s)) logCountMap[l.campaign_id].sent++;
-        if (s === 'opened' || s === 'clicked') logCountMap[l.campaign_id].opened++;
-        if (s === 'clicked')  logCountMap[l.campaign_id].clicked++;
-        if (s === 'bounced')  logCountMap[l.campaign_id].bounced++;
-      }
-      if ((batch ?? []).length < pgSize) break;
-      pg++;
-    }
-  }
-
   // Separate by status for banners
   const sendingRows   = rows.filter((c: any) => c.status === 'sending');
   const scheduledRows = rows.filter((c: any) => c.status === 'scheduled');
@@ -119,9 +88,8 @@ export default async function CampaignsPage() {
           <table className="w-full text-sm">
             <tbody className="divide-y divide-blue-100">
               {sendingRows.map((c: any) => {
-                const lc = logCountMap[c.id] ?? { sent: 0, opened: 0, clicked: 0, bounced: 0 };
                 const pct = c.total_recipients > 0
-                  ? Math.round((lc.sent / c.total_recipients) * 100)
+                  ? Math.round(((c.sent_count ?? 0) / c.total_recipients) * 100)
                   : 0;
                 return (
                   <tr key={c.id} className="hover:bg-blue-100/40 transition-colors">
@@ -142,7 +110,7 @@ export default async function CampaignsPage() {
                         <div className="flex-1 h-1.5 bg-blue-100 rounded-full overflow-hidden">
                           <div className="h-full bg-blue-500 rounded-full transition-all" style={{ width: `${pct}%` }} />
                         </div>
-                        <span className="font-mono">{lc.sent}/{c.total_recipients ?? '?'}</span>
+                        <span className="font-mono">{c.sent_count ?? 0}/{c.total_recipients ?? '?'}</span>
                       </div>
                     </td>
                     <td className="px-4 py-3">
@@ -225,8 +193,8 @@ export default async function CampaignsPage() {
             </thead>
             <tbody className="divide-y divide-gray-50">
               {tableRows.map((c: any) => {
-                const lc = logCountMap[c.id] ?? { sent: 0, opened: 0, clicked: 0, bounced: 0 };
-                const openRate = lc.sent > 0 ? ((lc.opened / lc.sent) * 100).toFixed(1) : null;
+                const sent = c.sent_count ?? 0;
+                const openRate = sent > 0 ? (((c.open_count ?? 0) / sent) * 100).toFixed(1) : null;
 
                 return (
                   <tr key={c.id} className="hover:bg-gray-50 transition-colors">
@@ -242,13 +210,13 @@ export default async function CampaignsPage() {
                     <td className="px-4 py-3.5">
                       <span className={statusColors[c.status] ?? 'badge-gray'}>{c.status}</span>
                     </td>
-                    <td className="px-4 py-3.5 text-right tabular-nums">{lc.sent}</td>
+                    <td className="px-4 py-3.5 text-right tabular-nums">{sent}</td>
                     <td className="px-4 py-3.5 text-right tabular-nums">
-                      {lc.opened}
+                      {c.open_count ?? 0}
                       {openRate && <span className="text-gray-400 text-xs ml-1">({openRate}%)</span>}
                     </td>
-                    <td className="px-4 py-3.5 text-right tabular-nums">{lc.clicked}</td>
-                    <td className="px-4 py-3.5 text-right tabular-nums">{lc.bounced}</td>
+                    <td className="px-4 py-3.5 text-right tabular-nums">{c.click_count ?? 0}</td>
+                    <td className="px-4 py-3.5 text-right tabular-nums">{c.bounce_count ?? 0}</td>
                     <td className="px-4 py-3.5 text-xs text-gray-400">
                       {new Date(c.created_at).toLocaleDateString()}
                     </td>
