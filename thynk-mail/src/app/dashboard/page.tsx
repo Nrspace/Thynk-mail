@@ -1,3 +1,4 @@
+import { Suspense } from 'react';
 import { createServerClient } from '@/lib/supabase';
 import { BarChart3, Send, Users, TrendingUp, Mail, CheckCircle, Search, ArrowRight, AlertCircle } from 'lucide-react';
 import Link from 'next/link';
@@ -181,7 +182,9 @@ export default async function DashboardPage({ searchParams }: Props) {
           </p>
         </div>
         <div className="flex items-center gap-3">
-          <DashboardRangeSelect currentRange={range} />
+          <Suspense fallback={<div className="input w-44 h-9" />}>
+            <DashboardRangeSelect currentRange={range} />
+          </Suspense>
           <Link href="/email-status" className="btn-secondary"><Search size={15} /> Email Status</Link>
           <Link href="/campaigns/new" className="btn-primary"><Send size={15} /> New Campaign</Link>
         </div>
