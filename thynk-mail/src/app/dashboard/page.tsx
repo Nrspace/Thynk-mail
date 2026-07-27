@@ -5,7 +5,27 @@ import Link from 'next/link';
 import { redirect } from 'next/navigation';
 import { getCurrentUser, getActiveProjectId } from '@/lib/session';
 import DashboardCharts from '@/components/dashboard/DashboardCharts';
-import DashboardRangeSelect, { RANGE_OPTIONS } from '@/components/dashboard/DashboardRangeSelect';
+import DashboardRangeSelect from '@/components/dashboard/DashboardRangeSelect';
+
+// Server-side copy of the range labels, kept in sync with RANGE_OPTIONS in
+// DashboardRangeSelect.tsx. This can't just import RANGE_OPTIONS from that
+// file — it's a 'use client' component, and once a file is marked
+// 'use client', every export from it (even a plain array) becomes a
+// client-only reference. Calling .find() on it from this server component
+// throws at request time: "Attempted to call find() from the server but
+// find is on the client." Duplicating this small lookup avoids that
+// server/client boundary violation entirely.
+const RANGE_LABELS: Record<string, string> = {
+  '7': 'Last 7 Days',
+  'today': 'Today',
+  'week': 'This Week',
+  '15': '15 Days',
+  '30': '30 Days',
+  '90': '90 Days',
+  '180': '180 Days',
+  'year': 'Current Year',
+  'custom': 'Custom Period',
+};
 
 // Mirrors the same date-range logic used by /api/reports, plus a "7" (Last
 // 7 Days) option, which is the dashboard's default.
@@ -163,7 +183,7 @@ export default async function DashboardPage({ searchParams }: Props) {
 
   const range = searchParams.range ?? '7'; // default: Last 7 Days
   const d = await getDashboardData(projectId, range, searchParams.from, searchParams.to);
-  const selectedLabel = RANGE_OPTIONS.find(o => o.value === range)?.label ?? 'Last 7 Days';
+  const selectedLabel = RANGE_LABELS[range] ?? 'Last 7 Days';
 
   const statusColors: Record<string, string> = {
     sent: 'badge-green', sending: 'badge-blue', scheduled: 'badge-yellow',
