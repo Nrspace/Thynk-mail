@@ -29,6 +29,30 @@ async function runInChunks<T, R>(
   return results;
 }
 
+// Supabase/PostgREST silently caps ANY select at 1000 rows by default
+// (db.max_rows) unless you explicitly page through with .range(). This is
+// the actual root cause of campaigns finishing early at ~1000 contacts on
+// large lists — total_recipients was being set from a truncated result, so
+// the campaign correctly reported "fully sent" against the wrong, smaller
+// number. This helper pages through in batches of 1000 until a page comes
+// back shorter than the page size (i.e. we've reached the end).
+const PAGE_SIZE = 1000;
+async function fetchAllRows<T>(
+  query: (from: number, to: number) => PromiseLike<{ data: T[] | null; error: any }>
+): Promise<T[]> {
+  const all: T[] = [];
+  let from = 0;
+  while (true) {
+    const { data, error } = await query(from, from + PAGE_SIZE - 1);
+    if (error) throw new Error(error.message ?? String(error));
+    if (!data || data.length === 0) break;
+    all.push(...data);
+    if (data.length < PAGE_SIZE) break;
+    from += PAGE_SIZE;
+  }
+  return all;
+}
+
 // Picks the next account with remaining daily capacity, cycling through the
 // list. Returns null when ALL accounts are exhausted for the day.
 class AccountRotator {
@@ -152,9 +176,14 @@ export async function processCampaignChunk(
   const listIds: string[] = campaign.list_ids ?? [];
   if (!listIds.length) return fail('No recipient lists selected');
 
-  const { data: clRows, error: clErr } = await db
-    .from('contact_lists').select('contact_id').in('list_id', listIds);
-  if (clErr) return fail(`Failed to load contact lists: ${clErr.message}`);
+  let clRows: { contact_id: string }[];
+  try {
+    clRows = await fetchAllRows<{ contact_id: string }>((from, to) =>
+      db.from('contact_lists').select('contact_id').in('list_id', listIds).range(from, to)
+    );
+  } catch (err: unknown) {
+    return fail(`Failed to load contact lists: ${err instanceof Error ? err.message : String(err)}`);
+  }
 
   const contactIds = Array.from(new Set((clRows ?? []).map((r: any) => r.contact_id)));
   if (!contactIds.length) return fail('No contacts in selected lists');
@@ -181,8 +210,14 @@ export async function processCampaignChunk(
 
   await db.from('campaigns').update({ total_recipients: eligible.length }).eq('id', campaignId);
 
-  const { data: existingLogs } = await db
-    .from('send_logs').select('id, contact_id, status').eq('campaign_id', campaignId);
+  let existingLogs: { id: string; contact_id: string; status: string }[];
+  try {
+    existingLogs = await fetchAllRows<{ id: string; contact_id: string; status: string }>((from, to) =>
+      db.from('send_logs').select('id, contact_id, status').eq('campaign_id', campaignId).range(from, to)
+    );
+  } catch (err: unknown) {
+    return fail(`Failed to load send logs: ${err instanceof Error ? err.message : String(err)}`);
+  }
 
   const alreadySentIds = new Set(
     (existingLogs ?? []).filter((l: any) => l.status === 'sent').map((l: any) => l.contact_id)
