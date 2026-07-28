@@ -279,9 +279,38 @@ export interface SesHealthResult {
   isSandbox?: boolean;
   identityVerified?: boolean;
   max24HourSend?: number;
+  maxSendRate?: number;
   sentLast24Hours?: number;
   quotaCheckDenied?: boolean;
   sendPermissionConfirmed?: boolean;
+}
+
+/**
+ * Reads the account's ACTUAL AWS-enforced send rate (emails/sec) straight
+ * from SES via GetSendQuota. This matters a lot at 10k-20k+ volume: SES
+ * throttles any account that exceeds its assigned rate, and a fresh/low-
+ * reputation account can be capped as low as 1-5 emails/sec even though the
+ * daily quota looks generous. Sending faster than this returns "Throttling"
+ * errors, which look identical to any other send failure and — worse — can
+ * trip the 5-consecutive-failures safeguard and pause the whole campaign.
+ * Falls back to a conservative 5/sec if the account can't report it (missing
+ * ses:GetSendQuota permission, non-SES provider, or a transient API error) —
+ * safe for a brand-new SES account, but Rahul should update the account's
+ * IAM policy to include ses:GetSendQuota so real throughput is used instead.
+ */
+export async function getSesMaxSendRate(account: EmailAccount): Promise<number> {
+  const FALLBACK_RATE = 5;
+  if (account.provider !== 'ses') return FALLBACK_RATE;
+  if (!account.ses_access_key_id || !account.ses_secret_access_key_encrypted) return FALLBACK_RATE;
+  try {
+    const region = account.ses_region || 'us-east-1';
+    const ses = buildSesClient(region, account.ses_access_key_id, decryptCredential(account.ses_secret_access_key_encrypted));
+    const quota = await withTimeout(ses.send(new GetSendQuotaCommand({})), SMTP_CONNECTION_TIMEOUT, 'GetSendQuota');
+    const rate = quota.MaxSendRate;
+    return rate && rate > 0 ? rate : FALLBACK_RATE;
+  } catch {
+    return FALLBACK_RATE;
+  }
 }
 
 /**
@@ -309,6 +338,7 @@ export async function checkSesHealth(cfg: {
 
   let isSandbox: boolean | undefined;
   let max24HourSend: number | undefined;
+  let maxSendRate: number | undefined;
   let sentLast24Hours: number | undefined;
   let quotaCheckDenied = false;
 
@@ -319,6 +349,7 @@ export async function checkSesHealth(cfg: {
     isSandbox = (quota.Max24HourSend ?? 0) <= 200;
     max24HourSend = quota.Max24HourSend;
     sentLast24Hours = quota.SentLast24Hours;
+    maxSendRate = quota.MaxSendRate;
   } catch (err: unknown) {
     // A LOT of real-world IAM policies only grant send permissions, not
     // account-status read permissions (ses:GetSendQuota). That alone doesn't
@@ -368,6 +399,7 @@ export async function checkSesHealth(cfg: {
     isSandbox,
     identityVerified,
     max24HourSend,
+    maxSendRate,
     sentLast24Hours,
     quotaCheckDenied,
     sendPermissionConfirmed,
