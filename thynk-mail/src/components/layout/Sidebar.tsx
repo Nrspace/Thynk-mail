@@ -5,18 +5,19 @@ import { usePathname, useRouter } from 'next/navigation';
 import {
   LayoutDashboard, Send, Users, FileText,
   Mail, BarChart3, Settings, Zap, Search,
-  FolderKanban, UserCog, LogOut, ChevronDown,
+  FolderKanban, UserCog, LogOut, ChevronDown, ShieldOff,
 } from 'lucide-react';
 import ThemeSwitcher from './ThemeSwitcher';
 
 const nav = [
-  { href: '/dashboard',    icon: LayoutDashboard, label: 'Dashboard'    },
-  { href: '/campaigns',    icon: Send,            label: 'Campaigns'    },
-  { href: '/contacts',     icon: Users,           label: 'Contacts'     },
-  { href: '/templates',    icon: FileText,        label: 'Templates'    },
-  { href: '/accounts',     icon: Mail,            label: 'Email Accounts' },
-  { href: '/reports',      icon: BarChart3,       label: 'Reports'      },
-  { href: '/email-status', icon: Search,          label: 'Email Status' },
+  { href: '/dashboard',     icon: LayoutDashboard, label: 'Dashboard'    },
+  { href: '/campaigns',     icon: Send,            label: 'Campaigns'    },
+  { href: '/contacts',      icon: Users,           label: 'Contacts'     },
+  { href: '/suppressions',  icon: ShieldOff,       label: 'Unsubscribe List' },
+  { href: '/templates',     icon: FileText,        label: 'Templates'    },
+  { href: '/accounts',      icon: Mail,            label: 'Email Accounts' },
+  { href: '/reports',       icon: BarChart3,       label: 'Reports'      },
+  { href: '/email-status',  icon: Search,          label: 'Email Status' },
 ];
 
 interface Project { id: string; name: string; slug: string }
