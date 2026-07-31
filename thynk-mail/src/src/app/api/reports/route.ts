@@ -1,0 +1,206 @@
+import { NextRequest, NextResponse } from 'next/server';
+import { createServerClient } from '@/lib/supabase';
+import { requireProjectContext } from '@/lib/api-auth';
+
+// Always execute fresh — never let Next.js statically cache or memoize this
+// response. Without this, a route handler with no explicit config can be
+// cached longer than expected, serving stale open/click numbers even though
+// the query itself (see below) is written to always read live data.
+export const dynamic = 'force-dynamic';
+export const revalidate = 0;
+export const fetchCache = 'force-no-store';
+
+/**
+ * Data sources
+ * ============
+ * Date-scoped totals, the daily/monthly charts, and per-account stats are
+ * computed live from send_logs, since only send_logs has per-event
+ * timestamps to filter/bucket by date and account.
+ *
+ * The per-campaign table (sent/opened/clicked/bounced for each campaign)
+ * reads directly from campaigns.sent_count/open_count/click_count/
+ * bounce_count instead — the same columns used by the Campaigns list,
+ * Dashboard, and campaign detail page — so a given campaign's figures are
+ * identical everywhere in the app. These are lifetime totals and are not
+ * affected by the selected date-range filter.
+ *
+ * Status funnel: queued → sent → [delivered] → opened → clicked
+ *   Sent     = status IN (sent, delivered, opened, clicked)
+ *   Opened   = status IN (opened, clicked)   — click implies prior open
+ *   Clicked  = status = clicked
+ *   Delivered= status = delivered            — 0 if provider skips this step (Brevo via SMTP)
+ */
+
+function getDateRange(rangeParam: string, from?: string, to?: string): { since: Date; until: Date } {
+  const now = new Date();
+  const until = to ? new Date(to + 'T23:59:59') : new Date();
+
+  if (rangeParam === 'custom' && from) {
+    return { since: new Date(from + 'T00:00:00'), until };
+  }
+
+  let since: Date;
+  switch (rangeParam) {
+    case 'today':
+      since = new Date(now.getFullYear(), now.getMonth(), now.getDate(), 0, 0, 0);
+      break;
+    case 'week': {
+      const day = now.getDay();
+      const diff = day === 0 ? -6 : 1 - day;
+      since = new Date(now.getFullYear(), now.getMonth(), now.getDate() + diff, 0, 0, 0);
+      break;
+    }
+    case '15':  since = new Date(now); since.setDate(since.getDate() - 15);  break;
+    case '30':  since = new Date(now); since.setDate(since.getDate() - 30);  break;
+    case '90':  since = new Date(now); since.setDate(since.getDate() - 90);  break;
+    case '180': since = new Date(now); since.setDate(since.getDate() - 180); break;
+    case 'year':
+    default:
+      since = new Date(now.getFullYear(), 0, 1);
+      break;
+  }
+  return { since, until };
+}
+
+function isSent(status: string)    { return ['sent','delivered','opened','clicked'].includes(status); }
+function isOpened(status: string)  { return status === 'opened' || status === 'clicked'; }
+
+export async function GET(req: NextRequest) {
+  const guard = await requireProjectContext();
+  if (!guard.ok) return guard.response;
+  const { projectId } = guard.ctx;
+
+  const db = createServerClient();
+  const { searchParams } = new URL(req.url);
+  const rangeParam = searchParams.get('range') ?? 'year';
+  const fromDate   = searchParams.get('from') ?? undefined;
+  const toDate     = searchParams.get('to')   ?? undefined;
+
+  const { since, until } = getDateRange(rangeParam, fromDate, toDate);
+  const sinceISO = since.toISOString();
+  const untilISO = until.toISOString();
+
+  // ── Get all team accounts (for scoping + account stats tab) ──
+  const { data: teamAccounts } = await db
+    .from('email_accounts')
+    .select('id, name, email, provider')
+    .eq('team_id', projectId);
+
+  const allAccounts     = teamAccounts ?? [];
+  const teamAccountIds  = allAccounts.map(a => a.id);
+
+  // ── ONE paginated send_logs fetch — avoids Supabase 1000-row cap ──
+  const logs: any[] = [];
+  if (teamAccountIds.length > 0) {
+    let pg = 0;
+    const pgSize = 1000;
+    while (true) {
+      const { data: batch } = await db
+        .from('send_logs')
+        .select('status, sent_at, created_at, account_id, campaign_id')
+        .in('account_id', teamAccountIds)
+        .gte('created_at', sinceISO)
+        .lte('created_at', untilISO)
+        .not('status', 'eq', 'queued')
+        .range(pg * pgSize, (pg + 1) * pgSize - 1);
+      logs.push(...(batch ?? []));
+      if ((batch ?? []).length < pgSize) break;
+      pg++;
+    }
+  }
+
+  // ── Totals ──
+  let totalSent = 0, totalOpened = 0, totalClicked = 0, totalBounced = 0, totalUnsubscribed = 0;
+  for (const log of logs) {
+    if (isSent(log.status))               totalSent++;
+    if (isOpened(log.status))             totalOpened++;
+    if (log.status === 'clicked')         totalClicked++;
+    if (log.status === 'bounced')         totalBounced++;
+    if (log.status === 'unsubscribed')    totalUnsubscribed++;
+  }
+
+  const openRate   = totalSent > 0 ? +((totalOpened  / totalSent) * 100).toFixed(1) : 0;
+  const clickRate  = totalSent > 0 ? +((totalClicked / totalSent) * 100).toFixed(1) : 0;
+  const bounceRate = totalSent > 0 ? +((totalBounced / totalSent) * 100).toFixed(1) : 0;
+
+  // ── Daily aggregation ──
+  const dailyMap: Record<string, { sent: number; delivered: number; opened: number; clicked: number; bounced: number; failed: number }> = {};
+  for (const log of logs) {
+    const day = ((log.sent_at ?? log.created_at) as string).slice(0, 10);
+    if (!dailyMap[day]) dailyMap[day] = { sent: 0, delivered: 0, opened: 0, clicked: 0, bounced: 0, failed: 0 };
+    if (isSent(log.status))               dailyMap[day].sent++;
+    if (log.status === 'delivered')       dailyMap[day].delivered++;
+    if (isOpened(log.status))             dailyMap[day].opened++;
+    if (log.status === 'clicked')         dailyMap[day].clicked++;
+    if (log.status === 'bounced')         dailyMap[day].bounced++;
+    if (log.status === 'failed')          dailyMap[day].failed++;
+  }
+  const daily = Object.entries(dailyMap)
+    .sort(([a], [b]) => a.localeCompare(b))
+    .map(([date, vals]) => ({ date, ...vals }));
+
+  // ── Monthly aggregation ──
+  const monthlyMap: Record<string, { month: string; sent: number; delivered: number; opened: number; clicked: number; bounced: number; failed: number }> = {};
+  for (const d of daily) {
+    const m = d.date.slice(0, 7);
+    if (!monthlyMap[m]) monthlyMap[m] = { month: m, sent: 0, delivered: 0, opened: 0, clicked: 0, bounced: 0, failed: 0 };
+    monthlyMap[m].sent      += d.sent;
+    monthlyMap[m].delivered += d.delivered;
+    monthlyMap[m].opened    += d.opened;
+    monthlyMap[m].clicked   += d.clicked;
+    monthlyMap[m].bounced   += d.bounced;
+    monthlyMap[m].failed    += d.failed;
+  }
+  const monthly = Object.values(monthlyMap).sort((a, b) => a.month.localeCompare(b.month));
+
+  // ── Account stats ──
+  const accountMap: Record<string, { sent: number; delivered: number; opened: number; clicked: number; bounced: number; failed: number }> = {};
+  for (const log of logs) {
+    const aid = log.account_id as string;
+    if (!aid) continue;
+    if (!accountMap[aid]) accountMap[aid] = { sent: 0, delivered: 0, opened: 0, clicked: 0, bounced: 0, failed: 0 };
+    if (isSent(log.status))               accountMap[aid].sent++;
+    if (log.status === 'delivered')       accountMap[aid].delivered++;
+    if (isOpened(log.status))             accountMap[aid].opened++;
+    if (log.status === 'clicked')         accountMap[aid].clicked++;
+    if (log.status === 'bounced')         accountMap[aid].bounced++;
+    if (log.status === 'failed')          accountMap[aid].failed++;
+  }
+  const accountStats = allAccounts.map(a => ({
+    id: a.id, name: a.name, email: a.email, provider: a.provider,
+    ...(accountMap[a.id] ?? { sent: 0, delivered: 0, opened: 0, clicked: 0, bounced: 0, failed: 0 }),
+  }));
+
+  // ── Campaign list — NO date filter, show ALL campaigns (same as /campaigns page) ──
+  // Sent/open/click/bounce figures come straight from the campaigns table's
+  // own counters, same as the Campaigns list, Dashboard, and campaign detail
+  // page, so a given campaign always shows the same numbers everywhere.
+  // Note: unlike the daily/monthly/account breakdowns above (which are
+  // scoped to the selected date range and need send_logs' timestamps),
+  // these are lifetime totals for the campaign regardless of the range filter.
+  const { data: campaignRows } = await db
+    .from('campaigns')
+    .select('id, name, status, created_at, sent_at, sent_count, open_count, click_count, bounce_count')
+    .eq('team_id', projectId)
+    .order('created_at', { ascending: false });
+
+  const campaigns = (campaignRows ?? []).map(c => ({
+    id:           c.id,
+    name:         c.name,
+    status:       c.status,
+    created_at:   c.created_at,
+    sent_at:      c.sent_at,
+    sent_count:   c.sent_count   ?? 0,
+    open_count:   c.open_count   ?? 0,
+    click_count:  c.click_count  ?? 0,
+    bounce_count: c.bounce_count ?? 0,
+  }));
+
+  return NextResponse.json({
+    totals: { sent: totalSent, opened: totalOpened, clicked: totalClicked, bounced: totalBounced, unsubscribed: totalUnsubscribed, openRate, clickRate, bounceRate },
+    campaigns,
+    daily,
+    monthly,
+    accountStats,
+  });
+}
