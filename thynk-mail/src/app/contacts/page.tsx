@@ -8,7 +8,14 @@ interface Contact {
   is_subscribed: boolean; created_at: string;
 }
 interface ContactList { id: string; name: string; contact_count: number; }
-interface ImportResult { imported: number; skipped: number; invalid: number; }
+interface ImportResult {
+  imported: number;
+  skipped: number;
+  invalid: number;
+  skippedSuppressed?: number;
+  skippedSuppressedEmails?: string[];
+  skippedDuplicate?: number;
+}
 
 export default function ContactsPage() {
   const [contacts, setContacts]     = useState<Contact[]>([]);
@@ -92,7 +99,14 @@ export default function ContactsPage() {
         }),
       });
       const d = await res.json();
-      setImportResult({ imported: d.imported ?? 0, skipped: d.skipped ?? 0, invalid: parsed.invalid.length });
+      setImportResult({
+        imported: d.imported ?? 0,
+        skipped: d.skipped ?? 0,
+        invalid: parsed.invalid.length,
+        skippedSuppressed: d.skippedSuppressed ?? 0,
+        skippedSuppressedEmails: d.skippedSuppressedEmails ?? [],
+        skippedDuplicate: d.skippedDuplicate ?? 0,
+      });
       loadData();
     } finally { setImporting(false); }
   }
@@ -166,7 +180,14 @@ export default function ContactsPage() {
       });
       const d = await res.json();
       if (d.error) { setFileImportError(d.error); return; }
-      setFileImportResult({ imported: d.imported ?? 0, skipped: d.skipped ?? 0, invalid: raw.length - rows.length });
+      setFileImportResult({
+        imported: d.imported ?? 0,
+        skipped: d.skipped ?? 0,
+        invalid: raw.length - rows.length,
+        skippedSuppressed: d.skippedSuppressed ?? 0,
+        skippedSuppressedEmails: d.skippedSuppressedEmails ?? [],
+        skippedDuplicate: d.skippedDuplicate ?? 0,
+      });
       loadData();
     } catch {
       setFileImportError('Could not read that file. Please upload a valid .xlsx, .xls, or .csv file.');
@@ -256,7 +277,8 @@ export default function ContactsPage() {
         <div className="mb-4 bg-green-50 border border-green-100 text-green-700 text-sm rounded-lg px-4 py-2 flex items-center justify-between">
           <span>
             Imported {fileImportResult.imported}
-            {fileImportResult.skipped > 0 ? `, ${fileImportResult.skipped} duplicates skipped` : ''}
+            {(fileImportResult.skippedSuppressed ?? 0) > 0 ? `, ${fileImportResult.skippedSuppressed} skipped (previously unsubscribed)` : ''}
+            {(fileImportResult.skippedDuplicate ?? 0) > 0 ? `, ${fileImportResult.skippedDuplicate} duplicates skipped` : ''}
             {fileImportResult.invalid > 0 ? `, ${fileImportResult.invalid} rows had no valid email` : ''}.
           </span>
           <button onClick={() => setFileImportResult(null)} className="text-green-500 hover:text-green-700"><X size={14} /></button>
@@ -528,9 +550,15 @@ export default function ContactsPage() {
                       <p className="text-3xl font-bold text-green-600">{importResult.imported}</p>
                       <p className="text-xs text-gray-500 mt-1">Imported</p>
                     </div>
-                    {importResult.skipped > 0 && (
+                    {(importResult.skippedSuppressed ?? 0) > 0 && (
                       <div>
-                        <p className="text-3xl font-bold text-amber-500">{importResult.skipped}</p>
+                        <p className="text-3xl font-bold text-orange-500">{importResult.skippedSuppressed}</p>
+                        <p className="text-xs text-gray-500 mt-1">Previously unsubscribed</p>
+                      </div>
+                    )}
+                    {(importResult.skippedDuplicate ?? 0) > 0 && (
+                      <div>
+                        <p className="text-3xl font-bold text-amber-500">{importResult.skippedDuplicate}</p>
                         <p className="text-xs text-gray-500 mt-1">Duplicates skipped</p>
                       </div>
                     )}
@@ -541,6 +569,17 @@ export default function ContactsPage() {
                       </div>
                     )}
                   </div>
+                  {(importResult.skippedSuppressedEmails?.length ?? 0) > 0 && (
+                    <div className="bg-orange-50 border border-orange-100 rounded-lg px-4 py-3 mb-4 text-left">
+                      <p className="text-xs font-medium text-orange-700 mb-1">
+                        Not imported — these previously unsubscribed:
+                      </p>
+                      <p className="text-xs text-orange-600 font-mono">
+                        {importResult.skippedSuppressedEmails!.slice(0, 5).join(', ')}
+                        {(importResult.skippedSuppressed ?? 0) > 5 ? ` +${(importResult.skippedSuppressed ?? 0) - 5} more` : ''}
+                      </p>
+                    </div>
+                  )}
                   {pasteListId && (
                     <p className="text-sm text-gray-500 mb-5">
                       Added to <strong>{lists.find(l => l.id === pasteListId)?.name}</strong>

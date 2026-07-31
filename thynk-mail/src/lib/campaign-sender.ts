@@ -109,6 +109,7 @@ export interface ChunkOutcome {
   message?: string;
   sent: number;
   failed: number;
+  unsubscribed?: number;
   total: number;
 }
 
@@ -176,71 +177,79 @@ export async function processCampaignChunk(
   const listIds: string[] = campaign.list_ids ?? [];
   if (!listIds.length) return fail('No recipient lists selected');
 
-  let clRows: { contact_id: string }[];
-  try {
-    clRows = await fetchAllRows<{ contact_id: string }>((from, to) =>
-      db.from('contact_lists').select('contact_id').in('list_id', listIds).range(from, to)
-    );
-  } catch (err: unknown) {
-    return fail(`Failed to load contact lists: ${err instanceof Error ? err.message : String(err)}`);
-  }
+  // Has this campaign already been initialized (eligible list computed,
+  // 'queued' send_logs created for everyone)? A cheap count-only query tells
+  // us without pulling any rows. If yes, we skip straight past the entire
+  // contact/suppression scan below — that scan is the one-time-only cost;
+  // repeating it every single cron tick (as the previous version did) is
+  // what caused 15k sends to take 6-8 hours: each tick was burning most of
+  // its time re-loading and re-checking all 15,000 contacts and
+  // suppressions before sending anything, instead of just sending.
+  const { count: existingLogCount, error: logCountErr } = await db
+    .from('send_logs').select('*', { count: 'exact', head: true }).eq('campaign_id', campaignId);
+  if (logCountErr) return fail(`Failed to check send logs: ${logCountErr.message}`);
 
-  const contactIds = Array.from(new Set((clRows ?? []).map((r: any) => r.contact_id)));
-  if (!contactIds.length) return fail('No contacts in selected lists');
+  let total = campaign.total_recipients ?? 0;
 
-  const contacts = await runInChunks(contactIds, DB_IN_CHUNK_SIZE, async (chunk) => {
-    const { data, error } = await db.from('contacts').select('*').in('id', chunk).eq('is_subscribed', true);
-    if (error) throw new Error(`Failed to load contacts: ${error.message}`);
-    return data ?? [];
-  });
+  if (!existingLogCount) {
+    // ---- One-time setup: runs exactly once per campaign, on its very first tick ----
+    let clRows: { contact_id: string }[];
+    try {
+      clRows = await fetchAllRows<{ contact_id: string }>((from, to) =>
+        db.from('contact_lists').select('contact_id').in('list_id', listIds).range(from, to)
+      );
+    } catch (err: unknown) {
+      return fail(`Failed to load contact lists: ${err instanceof Error ? err.message : String(err)}`);
+    }
 
-  let suppressed = new Set<string>();
-  if (contacts.length > 0 && campaign.team_id) {
-    const emails = contacts.map((c: Contact) => c.email);
-    const suppressionRows = await runInChunks(emails, DB_IN_CHUNK_SIZE, async (chunk) => {
-      const { data, error } = await db.from('suppressions').select('email').eq('team_id', campaign.team_id).in('email', chunk);
-      if (error) throw new Error(`Failed to check suppressions: ${error.message}`);
+    const contactIds = Array.from(new Set(clRows.map(r => r.contact_id)));
+    if (!contactIds.length) return fail('No contacts in selected lists');
+
+    const contacts = await runInChunks(contactIds, DB_IN_CHUNK_SIZE, async (chunk) => {
+      const { data, error } = await db.from('contacts').select('*').in('id', chunk).eq('is_subscribed', true);
+      if (error) throw new Error(`Failed to load contacts: ${error.message}`);
       return data ?? [];
     });
-    suppressed = new Set(suppressionRows.map((s: any) => s.email));
-  }
 
-  const eligible = contacts.filter((c: Contact) => !suppressed.has(c.email));
-  if (!eligible.length) return fail('All contacts are suppressed or unsubscribed');
+    let suppressed = new Set<string>();
+    if (contacts.length > 0 && campaign.team_id) {
+      const emails = contacts.map((c: Contact) => c.email);
+      const suppressionRows = await runInChunks(emails, DB_IN_CHUNK_SIZE, async (chunk) => {
+        const { data, error } = await db.from('suppressions').select('email').eq('team_id', campaign.team_id).in('email', chunk);
+        if (error) throw new Error(`Failed to check suppressions: ${error.message}`);
+        return data ?? [];
+      });
+      suppressed = new Set(suppressionRows.map((s: any) => s.email));
+    }
 
-  await db.from('campaigns').update({ total_recipients: eligible.length }).eq('id', campaignId);
+    const eligible = contacts.filter((c: Contact) => !suppressed.has(c.email));
+    if (!eligible.length) return fail('All contacts are suppressed or unsubscribed');
 
-  let existingLogs: { id: string; contact_id: string; status: string }[];
-  try {
-    existingLogs = await fetchAllRows<{ id: string; contact_id: string; status: string }>((from, to) =>
-      db.from('send_logs').select('id, contact_id, status').eq('campaign_id', campaignId).range(from, to)
-    );
-  } catch (err: unknown) {
-    return fail(`Failed to load send logs: ${err instanceof Error ? err.message : String(err)}`);
-  }
+    total = eligible.length;
+    await db.from('campaigns').update({ total_recipients: total }).eq('id', campaignId);
 
-  const alreadySentIds = new Set(
-    (existingLogs ?? []).filter((l: any) => l.status === 'sent').map((l: any) => l.contact_id)
-  );
-  const existingLogMap = new Map((existingLogs ?? []).map((l: any) => [l.contact_id, l]));
-
-  const needsLog = eligible.filter((c: Contact) => !existingLogMap.has(c.id));
-  let logs: any[] = (existingLogs ?? []).filter((l: any) => l.status !== 'sent');
-  if (needsLog.length > 0) {
-    const logRows = needsLog.map((c: Contact) => ({
+    const logRows = eligible.map((c: Contact) => ({
       campaign_id: campaignId, contact_id: c.id, account_id: rawAccountIds[0], status: 'queued',
     }));
-    const newLogs = await runInChunks(logRows, DB_IN_CHUNK_SIZE, async (chunk) => {
-      const { data, error } = await db.from('send_logs').insert(chunk).select('id, contact_id, status');
+    await runInChunks(logRows, DB_IN_CHUNK_SIZE, async (chunk) => {
+      const { error } = await db.from('send_logs').insert(chunk);
       if (error) throw new Error(`Failed to create send logs: ${error.message}`);
-      return data ?? [];
+      return [];
     });
-    logs = [...logs, ...newLogs];
   }
 
-  let sentCount = alreadySentIds.size;
-  let failCount = 0;
-  const total = eligible.length;
+  // Cheap counts (head:true — no rows transferred) instead of loading every
+  // log row just to count statuses.
+  const { count: sentCountRes } = await db
+    .from('send_logs').select('*', { count: 'exact', head: true }).eq('campaign_id', campaignId).eq('status', 'sent');
+  const { count: failCountRes } = await db
+    .from('send_logs').select('*', { count: 'exact', head: true }).eq('campaign_id', campaignId).eq('status', 'failed');
+  const { count: unsubCountRes } = await db
+    .from('send_logs').select('*', { count: 'exact', head: true }).eq('campaign_id', campaignId).eq('status', 'unsubscribed');
+
+  let sentCount = sentCountRes ?? 0;
+  let failCount = failCountRes ?? 0;
+  let unsubscribedCount = unsubCountRes ?? 0;
 
   const numBatches = total >= 10000 ? 3 : total >= 5000 ? 2 : 1;
   const batchSize = Math.ceil(total / numBatches);
@@ -260,33 +269,69 @@ export async function processCampaignChunk(
 
   emit('progress', { sent: sentCount, failed: 0, total, pct: Math.round((sentCount / total) * 100), batch: batchNumberFor(sentCount), totalBatches: numBatches });
 
-  // Look up each account's REAL AWS-enforced send rate once per chunk
-  // (cheap — one GetSendQuota call per account, not per email) instead of
-  // guessing a flat delay. A single account maxing out at, say, 14/sec
-  // means 15k contacts can go out in ~18 minutes of actual sending time
-  // instead of the ~1.5 hours the old flat 400ms-per-email delay forced on
-  // every account regardless of what it could actually handle.
+  // Look up each account's REAL AWS-enforced send rate once per chunk, in
+  // parallel (cheap — one GetSendQuota call per account, not per email)
+  // instead of guessing a flat delay. A single account maxing out at, say,
+  // 14/sec means 15k contacts can go out in well under an hour of actual
+  // sending time.
   const accountRates = new Map<string, number>();
-  for (const acc of activeAccounts) {
+  await Promise.all(activeAccounts.map(async (acc: any) => {
     accountRates.set(acc.id, await getSesMaxSendRate(acc as EmailAccount));
-  }
-
-  // O(1) contact lookup — the old .find() per email was O(n) and would
-  // meaningfully slow down right as list size grows into the 15-20k range.
-  const eligibleById = new Map(eligible.map((c: Contact) => [c.id, c]));
+  }));
 
   const currentTotalRate = () => {
-    let total = 0;
+    let rate = 0;
     for (const acc of activeAccounts) {
-      if (rotator.hasCapacity(acc.id, acc.daily_limit)) total += accountRates.get(acc.id) ?? 5;
+      if (rotator.hasCapacity(acc.id, acc.daily_limit)) rate += accountRates.get(acc.id) ?? 5;
     }
-    return total;
+    return rate;
   };
+
+  // Fetch only the next batch of not-yet-sent logs (queued, or failed for
+  // retry) — NOT the whole remaining list. MAX_LOGS_PER_TICK is sized well
+  // above what one 45s chunk can realistically send, so this is normally a
+  // single DB round trip per tick instead of paginating through everything
+  // still left to send (which, late in a 15k+ campaign, used to mean
+  // re-fetching thousands of already-handled rows just to find the next
+  // handful to act on).
+  const MAX_LOGS_PER_TICK = 3000;
+  const logsArr: { id: string; contact_id: string; status: string }[] = [];
+  {
+    let from = 0;
+    while (logsArr.length < MAX_LOGS_PER_TICK) {
+      const { data, error } = await db
+        .from('send_logs').select('id, contact_id, status')
+        .eq('campaign_id', campaignId).in('status', ['queued', 'failed'])
+        .order('id').range(from, from + PAGE_SIZE - 1);
+      if (error) return fail(`Failed to load queued send logs: ${error.message}`);
+      if (!data || data.length === 0) break;
+      logsArr.push(...data);
+      if (data.length < PAGE_SIZE) break;
+      from += PAGE_SIZE;
+    }
+  }
+
+  if (!logsArr.length) {
+    // Nothing left to send — finalize below rather than looping forever.
+    const finalStatus = failCount > 0 && sentCount === 0 ? 'failed' : 'sent';
+    await db.from('campaigns').update({ status: finalStatus, sent_at: new Date().toISOString(), sent_count: sentCount }).eq('id', campaignId);
+    emit('done', { success: true, sent: sentCount, failed: failCount, unsubscribed: unsubscribedCount, total });
+    return { ok: true, stopped: true, reason: 'done', sent: sentCount, failed: failCount, unsubscribed: unsubscribedCount, total };
+  }
+
+  // Contacts for just this batch — a handful of chunked round trips instead
+  // of loading every contact in the whole campaign on every tick.
+  const batchContactIds = Array.from(new Set(logsArr.map(l => l.contact_id)));
+  const batchContacts = await runInChunks(batchContactIds, DB_IN_CHUNK_SIZE, async (chunk) => {
+    const { data, error } = await db.from('contacts').select('*').in('id', chunk);
+    if (error) throw new Error(`Failed to load contacts: ${error.message}`);
+    return data ?? [];
+  });
+  const eligibleById = new Map(batchContacts.map((c: Contact) => [c.id, c]));
 
   let consecutiveFails = 0;
   const batchStart = Date.now();
   let batchStoppedEarly = false;
-  const logsArr = logs ?? [];
   let idx = 0;
 
   while (idx < logsArr.length) {
@@ -295,7 +340,7 @@ export async function processCampaignChunk(
     const totalRate = currentTotalRate();
     if (totalRate <= 0) {
       await db.from('campaigns').update({ status: 'paused', sent_count: sentCount }).eq('id', campaignId);
-      const message = `Daily sending limit reached. ${total - sentCount - failCount} contacts queued for tomorrow.`;
+      const message = `Daily sending limit reached. ${total - sentCount - failCount - unsubscribedCount} contacts queued for tomorrow.`;
       emit('done', { success: true, sent: sentCount, failed: failCount, total, paused: true, message });
       return { ok: true, stopped: true, reason: 'paused', message, sent: sentCount, failed: failCount, total };
     }
@@ -325,9 +370,31 @@ export async function processCampaignChunk(
       continue;
     }
 
+    // Final unsubscribe check, right before actually sending. The initial
+    // suppression filter ran once at campaign setup — someone can unsubscribe
+    // (from THIS campaign's earlier emails, or any other) at any point while
+    // a large send is still working through the rest of the list, so we
+    // re-check just this wave's handful of emails against the suppression
+    // table every time. Cheap (one small .in() query) and guarantees no one
+    // who has opted out ever gets an email, regardless of timing.
+    const waveEmails = Array.from(new Set(assigned.map(a => a.contact.email)));
+    const { data: newlySuppressed } = await db
+      .from('suppressions').select('email').eq('team_id', campaign.team_id).in('email', waveEmails);
+    const suppressedNow = new Set((newlySuppressed ?? []).map((s: any) => s.email));
+
+    const toSend = assigned.filter(a => !suppressedNow.has(a.contact.email));
+    const toSkip = assigned.filter(a => suppressedNow.has(a.contact.email));
+    if (toSkip.length) {
+      unsubscribedCount += toSkip.length;
+      await Promise.all(toSkip.map(({ log }) =>
+        db.from('send_logs').update({ status: 'unsubscribed' }).eq('id', log.id)
+      ));
+    }
+    if (!toSend.length) continue;
+
     assigned.forEach(({ log }) => announceBatchIfNeeded(sentCount + failCount));
 
-    const sendResults = await Promise.all(assigned.map(async ({ log, contact, account }) => {
+    const sendResults = await Promise.all(toSend.map(async ({ log, contact, account }) => {
       const vars: Record<string, string> = {
         first_name: contact.first_name ?? '', last_name: contact.last_name ?? '', email: contact.email,
         ...(contact.metadata ?? {}),
@@ -388,7 +455,8 @@ export async function processCampaignChunk(
     if (elapsed < 1000) await sleep(1000 - elapsed);
   }
 
-  if (batchStoppedEarly) {
+  const remaining = total - sentCount - failCount - unsubscribedCount;
+  if (batchStoppedEarly || remaining > 0) {
     await db.from('campaigns').update({ status: 'sending', sent_count: sentCount }).eq('id', campaignId);
     const message = `Sent ${sentCount} of ${total} so far - continuing...`;
     emit('chunk', { sent: sentCount, failed: failCount, total, pct: Math.round(((sentCount + failCount) / total) * 100), message, batch: batchNumberFor(sentCount + failCount), totalBatches: numBatches });
@@ -397,6 +465,6 @@ export async function processCampaignChunk(
 
   const finalStatus = failCount === total ? 'failed' : 'sent';
   await db.from('campaigns').update({ status: finalStatus, sent_at: new Date().toISOString(), sent_count: sentCount }).eq('id', campaignId);
-  emit('done', { success: true, sent: sentCount, failed: failCount, total, totalBatches: numBatches });
-  return { ok: true, stopped: true, reason: 'done', sent: sentCount, failed: failCount, total };
+  emit('done', { success: true, sent: sentCount, failed: failCount, unsubscribed: unsubscribedCount, total, totalBatches: numBatches });
+  return { ok: true, stopped: true, reason: 'done', sent: sentCount, failed: failCount, unsubscribed: unsubscribedCount, total };
 }

@@ -22,19 +22,34 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ error: 'No contacts provided' }, { status: 400 });
   }
 
-  // Check suppression list (case-insensitive — emails are stored lowercase)
-  const normalizedInputEmails = contacts.map((c) => (c.email || '').trim().toLowerCase()).filter(Boolean);
-  const { data: suppressed } = await db
-    .from('suppressions')
-    .select('email')
-    .eq('team_id', projectId)
-    .in('email', normalizedInputEmails);
+  // Check suppression list (case-insensitive — emails are stored lowercase).
+  // Chunked because a single .in() with thousands of emails can exceed
+  // request/URL size limits — same issue that caused the send-side
+  // truncation bug, avoided here the same way.
+  const CHUNK_SIZE = 300;
+  const normalizedInputEmails = Array.from(new Set(contacts.map((c) => (c.email || '').trim().toLowerCase()).filter(Boolean)));
+  const suppressedEmails = new Set<string>();
+  for (let i = 0; i < normalizedInputEmails.length; i += CHUNK_SIZE) {
+    const chunk = normalizedInputEmails.slice(i, i + CHUNK_SIZE);
+    const { data: suppressed, error: suppErr } = await db
+      .from('suppressions').select('email').eq('team_id', projectId).in('email', chunk);
+    if (suppErr) return NextResponse.json({ error: `Failed to check unsubscribe list: ${suppErr.message}` }, { status: 500 });
+    (suppressed ?? []).forEach((s) => suppressedEmails.add(s.email.toLowerCase()));
+  }
 
-  const suppressedEmails = new Set((suppressed ?? []).map((s) => s.email.toLowerCase()));
+  const skippedSuppressedEmails = contacts
+    .filter((c) => c.email && suppressedEmails.has(c.email.trim().toLowerCase()))
+    .map((c) => c.email.trim().toLowerCase());
   const valid = contacts.filter((c) => c.email && !suppressedEmails.has(c.email.trim().toLowerCase()));
 
   if (valid.length === 0) {
-    return NextResponse.json({ imported: 0, skipped: contacts.length });
+    return NextResponse.json({
+      imported: 0,
+      skipped: contacts.length,
+      skippedSuppressed: skippedSuppressedEmails.length,
+      skippedSuppressedEmails: skippedSuppressedEmails.slice(0, 20), // sample for display, not the full list
+      skippedDuplicate: 0,
+    });
   }
 
   // Upsert contacts
@@ -79,5 +94,8 @@ export async function POST(req: NextRequest) {
   return NextResponse.json({
     imported: inserted?.length ?? 0,
     skipped: contacts.length - valid.length + duplicatesInFile,
+    skippedSuppressed: skippedSuppressedEmails.length,
+    skippedSuppressedEmails: skippedSuppressedEmails.slice(0, 20),
+    skippedDuplicate: duplicatesInFile,
   });
 }
