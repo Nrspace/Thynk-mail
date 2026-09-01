@@ -180,18 +180,15 @@ export default function EmailStatusPage() {
       .catch(() => setAccountsLoading(false));
   }, []);
 
-  // Fetch campaigns whenever selected accounts change
+  // Fetch the full campaign list once — it's team-scoped, not tied to
+  // which account(s) are selected (matches Dashboard/Campaigns pages).
   useEffect(() => {
-    if (selectedAccounts.length === 0) { setCampaigns([]); setSelectedCampaign(''); return; }
     setCampaignsLoading(true);
-    setSelectedCampaign('');
-    const params = new URLSearchParams();
-    params.set('account_ids', selectedAccounts.join(','));
-    fetch(`/api/email-status/campaigns?${params}`)
+    fetch('/api/email-status/campaigns')
       .then(r => r.json())
       .then(j => { setCampaigns(j.campaigns ?? []); setCampaignsLoading(false); })
       .catch(() => { setCampaigns([]); setCampaignsLoading(false); });
-  }, [selectedAccounts]);
+  }, []);
 
   const search = useCallback(async (p = 1) => {
     setLoading(true);
@@ -258,23 +255,21 @@ export default function EmailStatusPage() {
             ) : (
               <AccountMultiSelect accounts={accounts} selected={selectedAccounts} onChange={setSelectedAccounts} />
             )}
-            {/* Campaign dropdown — shown only after account(s) selected */}
-            {selectedAccounts.length > 0 && (
-              <div className="relative flex-1">
-                <Mail size={14} className="absolute left-3 top-1/2 -translate-y-1/2" style={{ color: 'var(--text-muted)' }} />
-                <select
-                  className="input pl-9 w-full appearance-none"
-                  value={selectedCampaign}
-                  onChange={e => setSelectedCampaign(e.target.value)}
-                  disabled={campaignsLoading}
-                >
-                  <option value="">{campaignsLoading ? 'Loading campaigns…' : 'All Campaigns'}</option>
-                  {campaigns.map(c => (
-                    <option key={c.id} value={c.id}>{c.name}</option>
-                  ))}
-                </select>
-              </div>
-            )}
+            {/* Campaign dropdown — team-wide list, independent of account selection */}
+            <div className="relative flex-1">
+              <Mail size={14} className="absolute left-3 top-1/2 -translate-y-1/2" style={{ color: 'var(--text-muted)' }} />
+              <select
+                className="input pl-9 w-full appearance-none"
+                value={selectedCampaign}
+                onChange={e => setSelectedCampaign(e.target.value)}
+                disabled={campaignsLoading}
+              >
+                <option value="">{campaignsLoading ? 'Loading campaigns…' : 'All Campaigns'}</option>
+                {campaigns.map(c => (
+                  <option key={c.id} value={c.id}>{c.name}</option>
+                ))}
+              </select>
+            </div>
             <div className="relative">
               <Filter size={14} className="absolute left-3 top-1/2 -translate-y-1/2" style={{ color: 'var(--text-muted)' }} />
               <select className="input pl-9 w-44 appearance-none" value={statusFilter} onChange={e => setStatusFilter(e.target.value)}>
