@@ -68,7 +68,26 @@ function renderBlockHtml(block: Block): string {
   }
 }
 
+// Detects markup that is already a complete HTML document (has its own
+// <html>/<!DOCTYPE> wrapper) rather than a fragment meant to be dropped into
+// one of our blocks.
+function isFullHtmlDocument(html: string): boolean {
+  return /<!doctype\s+html|<html[\s>]/i.test(html);
+}
+
 function buildFullHtml(blocks: Block[]): string {
+  // Editing an existing template loads its saved html_body into a single
+  // 'html' block (see the load effect below) so it round-trips exactly.
+  // But that saved html_body is ALREADY a full document (it went through
+  // this same wrapper the first time it was saved) — wrapping it in the
+  // standard <table><tr><td style="padding:32px 16px"> shell AGAIN on every
+  // save nested a fresh copy of that padding/table structure inside itself
+  // each time, which is why re-opening and saving a template kept adding
+  // visible blank space. If the whole template is just one already-complete
+  // HTML document, save it as-is instead of wrapping it a second time.
+  if (blocks.length === 1 && blocks[0].type === 'html' && isFullHtmlDocument(blocks[0].content)) {
+    return blocks[0].content;
+  }
   return `<!DOCTYPE html><html><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1.0"></head><body style="margin:0;padding:0;background:#f3f4f6;font-family:sans-serif;"><table width="100%" cellpadding="0" cellspacing="0" style="background:#f3f4f6;"><tr><td align="center" style="padding:32px 16px;"><table width="600" cellpadding="0" cellspacing="0" style="max-width:600px;width:100%;background:#ffffff;border-radius:8px;overflow:hidden;box-shadow:0 1px 3px rgba(0,0,0,0.1);"><tr><td>${blocks.map(renderBlockHtml).join('')}</td></tr></table></td></tr></table></body></html>`;
 }
 

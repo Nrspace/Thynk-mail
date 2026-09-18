@@ -38,6 +38,10 @@ export default function ContactsPage() {
   const [deletingListId, setDeletingListId] = useState<string | null>(null);
   const [deletingListName, setDeletingListName] = useState('');
 
+  // Delete single contact confirm
+  const [deletingContactId, setDeletingContactId] = useState<string | null>(null);
+  const [deletingContact, setDeletingContact] = useState(false);
+
   // Shown right after a new list is created — "how do you want to add contacts?"
   const [chooserListId, setChooserListId] = useState<string | null>(null);
   const [chooserListName, setChooserListName] = useState('');
@@ -48,17 +52,34 @@ export default function ContactsPage() {
   const [fileImportResult, setFileImportResult] = useState<ImportResult | null>(null);
   const [fileImportListId, setFileImportListId] = useState('');
 
-  useEffect(() => { loadData(); }, []);
+  // Total contact count across ALL lists — shown next to "All Contacts" and
+  // in the page header, independent of which list is currently selected.
+  const [totalContacts, setTotalContacts] = useState(0);
+
+  useEffect(() => { loadLists(); }, []);
+  // Selecting a list previously never re-fetched anything — the contacts
+  // table just kept showing whatever "All Contacts" had loaded, filtered
+  // only by the search box, so choosing a list visibly did nothing. This
+  // re-loads contacts scoped to the active list (or all of them) every time
+  // the selection changes.
+  useEffect(() => { loadContacts(); }, [activeList]);
+
+  async function loadLists() {
+    const l = await fetch('/api/contacts/lists').then(r => r.json());
+    setLists(l.data ?? []);
+  }
+
+  async function loadContacts() {
+    setLoading(true);
+    const url = activeList !== 'all' ? `/api/contacts?list_id=${activeList}` : '/api/contacts';
+    const c = await fetch(url).then(r => r.json());
+    setContacts(c.data ?? []);
+    if (activeList === 'all') setTotalContacts((c.data ?? []).length);
+    setLoading(false);
+  }
 
   async function loadData() {
-    setLoading(true);
-    const [c, l] = await Promise.all([
-      fetch('/api/contacts').then(r => r.json()),
-      fetch('/api/contacts/lists').then(r => r.json()),
-    ]);
-    setContacts(c.data ?? []);
-    setLists(l.data ?? []);
-    setLoading(false);
+    await Promise.all([loadContacts(), loadLists()]);
   }
 
   const filtered = contacts.filter(c => {
@@ -67,6 +88,16 @@ export default function ContactsPage() {
       (c.first_name ?? '').toLowerCase().includes(q) ||
       (c.last_name ?? '').toLowerCase().includes(q);
   });
+
+  async function confirmDeleteContact() {
+    if (!deletingContactId) return;
+    setDeletingContact(true);
+    try {
+      await fetch(`/api/contacts/${deletingContactId}`, { method: 'DELETE' });
+      setDeletingContactId(null);
+      loadData();
+    } finally { setDeletingContact(false); }
+  }
 
   // ── Parse pasted emails ──
   function parsePasted(text: string): { valid: string[]; invalid: string[] } {
@@ -232,7 +263,7 @@ export default function ContactsPage() {
       <div className="flex items-center justify-between mb-8">
         <div>
           <h1 className="text-2xl font-semibold">Contacts</h1>
-          <p className="text-sm text-gray-500 mt-1">{contacts.length} total subscribers</p>
+          <p className="text-sm text-gray-500 mt-1">{totalContacts.toLocaleString()} total subscribers</p>
         </div>
         <div className="flex gap-2">
           <input ref={fileRef} type="file" accept=".xlsx,.xls,.csv" className="hidden" onChange={handleFileUpload} />
@@ -292,7 +323,7 @@ export default function ContactsPage() {
             onClick={() => setActiveList('all')}
             className={`w-full text-left px-3 py-2 rounded-lg text-sm font-medium transition-colors ${activeList === 'all' ? 'bg-teal-50 text-teal-700' : 'text-gray-600 hover:bg-gray-100'}`}
           >
-            All Contacts <span className="text-gray-400 ml-1">({contacts.length})</span>
+            All Contacts <span className="text-gray-400 ml-1">({totalContacts.toLocaleString()})</span>
           </button>
 
           {lists.map(l => (
@@ -384,7 +415,11 @@ export default function ContactsPage() {
                       {new Date(c.created_at).toLocaleDateString()}
                     </td>
                     <td className="px-4 py-3">
-                      <button className="text-gray-300 hover:text-red-500 transition-colors">
+                      <button
+                        onClick={() => setDeletingContactId(c.id)}
+                        className="text-gray-300 hover:text-red-500 transition-colors"
+                        title="Delete contact"
+                      >
                         <Trash2 size={14} />
                       </button>
                     </td>
@@ -619,6 +654,33 @@ export default function ContactsPage() {
               </button>
               <button onClick={confirmDeleteList} className="btn-danger flex-1 justify-center">
                 <Trash2 size={14} /> Delete List
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* ══ DELETE CONTACT CONFIRM MODAL ══ */}
+      {deletingContactId && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/40">
+          <div className="bg-white rounded-2xl shadow-xl w-full max-w-sm p-6 text-center">
+            <div className="w-14 h-14 rounded-full bg-red-100 flex items-center justify-center mx-auto mb-4">
+              <Trash2 size={24} className="text-red-600" />
+            </div>
+            <h2 className="text-lg font-semibold text-gray-900 mb-2">Delete this contact?</h2>
+            <p className="text-sm text-gray-500 mb-6">
+              This will permanently remove them from every list. This cannot be undone.
+            </p>
+            <div className="flex gap-3">
+              <button
+                onClick={() => setDeletingContactId(null)}
+                disabled={deletingContact}
+                className="btn-secondary flex-1 justify-center"
+              >
+                Cancel
+              </button>
+              <button onClick={confirmDeleteContact} disabled={deletingContact} className="btn-danger flex-1 justify-center">
+                <Trash2 size={14} /> {deletingContact ? 'Deleting...' : 'Delete Contact'}
               </button>
             </div>
           </div>

@@ -1,6 +1,7 @@
 import { createServerClient } from '@/lib/supabase';
 import { sendEmail, getSesMaxSendRate } from '@/lib/smtp-router';
 import { buildFinalHtml } from '@/lib/template-renderer';
+import { fetchAllRows, runInChunks, DB_IN_CHUNK_SIZE, PAGE_SIZE } from '@/lib/db-paginate';
 import type { EmailAccount, Contact } from '@/types';
 
 const sleep = (ms: number) => new Promise(r => setTimeout(r, ms));
@@ -9,49 +10,6 @@ const sleep = (ms: number) => new Promise(r => setTimeout(r, ms));
 // jitter (a slightly slow SES response, GC pause, etc.) never tips us over
 // into throttling. 0.7 keeps real throughput comfortably under the ceiling.
 const RATE_SAFETY_MARGIN = 0.7;
-
-// Supabase/PostgREST sends .in(column, values) as a query string, e.g.
-// ?id=in.(uuid1,uuid2,...). At 10,000+ contacts that URL can exceed the
-// server/proxy URL-length limit and the request fails outright before any
-// email is sent. Running the same query in chunks avoids that ceiling
-// entirely, at the cost of a few extra sequential round trips.
-const DB_IN_CHUNK_SIZE = 300;
-async function runInChunks<T, R>(
-  items: T[],
-  size: number,
-  fn: (chunk: T[]) => Promise<R[]>
-): Promise<R[]> {
-  const results: R[] = [];
-  for (let i = 0; i < items.length; i += size) {
-    const chunk = items.slice(i, i + size);
-    results.push(...(await fn(chunk)));
-  }
-  return results;
-}
-
-// Supabase/PostgREST silently caps ANY select at 1000 rows by default
-// (db.max_rows) unless you explicitly page through with .range(). This is
-// the actual root cause of campaigns finishing early at ~1000 contacts on
-// large lists — total_recipients was being set from a truncated result, so
-// the campaign correctly reported "fully sent" against the wrong, smaller
-// number. This helper pages through in batches of 1000 until a page comes
-// back shorter than the page size (i.e. we've reached the end).
-const PAGE_SIZE = 1000;
-async function fetchAllRows<T>(
-  query: (from: number, to: number) => PromiseLike<{ data: T[] | null; error: any }>
-): Promise<T[]> {
-  const all: T[] = [];
-  let from = 0;
-  while (true) {
-    const { data, error } = await query(from, from + PAGE_SIZE - 1);
-    if (error) throw new Error(error.message ?? String(error));
-    if (!data || data.length === 0) break;
-    all.push(...data);
-    if (data.length < PAGE_SIZE) break;
-    from += PAGE_SIZE;
-  }
-  return all;
-}
 
 // Picks the next account with remaining daily capacity, cycling through the
 // list. Returns null when ALL accounts are exhausted for the day.
@@ -123,8 +81,13 @@ const BATCH_TIME_BUDGET_MS = 45_000;
  *    browser tab is closed — this is what actually makes large sends (5k,
  *    10k+ contacts) reliable rather than depending on the send page staying
  *    open in a browser for the entire multi-hour send).
+ *
+ * IMPORTANT — concurrency: this function is wrapped by the exported
+ * processCampaignChunk below, which takes out a short-lived lock on the
+ * campaign row before calling this. Do not call this un-exported inner
+ * function directly from a route handler.
  */
-export async function processCampaignChunk(
+async function processCampaignChunkLocked(
   campaignId: string,
   teamId: string,
   emit: ChunkEmitter = () => {}
@@ -467,4 +430,78 @@ export async function processCampaignChunk(
   await db.from('campaigns').update({ status: finalStatus, sent_at: new Date().toISOString(), sent_count: sentCount }).eq('id', campaignId);
   emit('done', { success: true, sent: sentCount, failed: failCount, unsubscribed: unsubscribedCount, total, totalBatches: numBatches });
   return { ok: true, stopped: true, reason: 'done', sent: sentCount, failed: failCount, unsubscribed: unsubscribedCount, total };
+}
+
+// How long a lock is held before it's considered stale and up for grabs
+// again. Must comfortably exceed BATCH_TIME_BUDGET_MS (45s) plus overhead,
+// so a normal in-progress tick is never pre-empted, but a tick that died
+// (function crashed, host recycled, etc.) without releasing the lock isn't
+// stuck forever either.
+const LOCK_TTL_MS = 120_000;
+
+/**
+ * Root cause of "sends more mail than contacts uploaded" on large (10k+)
+ * campaigns: nothing previously stopped two invocations of
+ * processCampaignChunk from running for the SAME campaign at the SAME
+ * time — e.g. the Vercel Cron tick firing for a campaign while the
+ * browser's own SSE loop (CampaignActions.tsx -> /api/send/queue) is still
+ * mid-chunk for it, or a dropped connection causing the browser to retry
+ * while the previous server-side invocation is still finishing. Both
+ * invocations would independently SELECT the same batch of 'queued'
+ * send_logs rows and both send to the same contacts before either one
+ * updated those rows to 'sent' — i.e. duplicate emails to the same people,
+ * which is exactly what looked like "extra" mail beyond the uploaded
+ * contact count.
+ *
+ * This wrapper takes out a short, self-expiring lock on the campaign row
+ * (campaigns.processing_lock_at) before doing any work, and only one
+ * caller can ever hold it at a time — the UPDATE...WHERE that acquires it
+ * only matches rows where the lock is empty or has expired, so a second,
+ * concurrent caller's UPDATE simply matches zero rows and they back off
+ * instead of proceeding. The lock is always released in `finally`, and
+ * self-expires via LOCK_TTL_MS even if release is somehow skipped (process
+ * killed, etc.), so a stuck lock can never permanently wedge a campaign.
+ */
+export async function processCampaignChunk(
+  campaignId: string,
+  teamId: string,
+  emit: ChunkEmitter = () => {}
+): Promise<ChunkOutcome> {
+  const db = createServerClient();
+  const nowIso = new Date().toISOString();
+  const lockUntilIso = new Date(Date.now() + LOCK_TTL_MS).toISOString();
+
+  const { data: locked, error: lockErr } = await db
+    .from('campaigns')
+    .update({ processing_lock_at: lockUntilIso })
+    .eq('id', campaignId)
+    .eq('team_id', teamId)
+    .or(`processing_lock_at.is.null,processing_lock_at.lt.${nowIso}`)
+    .select('id');
+
+  if (lockErr) {
+    emit('error', { error: `Failed to acquire campaign lock: ${lockErr.message}` });
+    return { ok: false, stopped: true, reason: 'error', message: lockErr.message, sent: 0, failed: 0, total: 0 };
+  }
+
+  if (!locked || locked.length === 0) {
+    // Another invocation (a different cron tick, a retried SSE request,
+    // another open browser tab) is already working this campaign right
+    // now. Back off without touching anything — the caller (SSE loop or
+    // cron) will simply try again shortly.
+    const { data: c } = await db.from('campaigns').select('sent_count, total_recipients').eq('id', campaignId).maybeSingle();
+    return {
+      ok: true, stopped: false, reason: 'chunk_budget',
+      message: 'Campaign is already being processed by another worker — will retry.',
+      sent: c?.sent_count ?? 0, failed: 0, total: c?.total_recipients ?? 0,
+    };
+  }
+
+  try {
+    return await processCampaignChunkLocked(campaignId, teamId, emit);
+  } finally {
+    // Always release — even on error/throw — so the next tick isn't stuck
+    // waiting out the full TTL for no reason.
+    await db.from('campaigns').update({ processing_lock_at: null }).eq('id', campaignId).eq('team_id', teamId);
+  }
 }

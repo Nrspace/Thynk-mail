@@ -1,7 +1,7 @@
 'use client';
 import { useState, useEffect } from 'react';
 import { useRouter } from 'next/navigation';
-import { ArrowLeft, Send, Save, Loader2, CheckCircle, Plus, X } from 'lucide-react';
+import { ArrowLeft, Send, Save, Loader2, CheckCircle, Plus, X, Mail, AlertCircle } from 'lucide-react';
 import Link from 'next/link';
 
 interface Account    { id: string; name: string; email: string; daily_limit: number; sent_today: number; last_reset_date?: string; }
@@ -32,6 +32,12 @@ export default function CampaignForm({ mode, campaignId, initial }: Props) {
   const [accounts, setAccounts]   = useState<Account[]>([]);
   const [lists, setLists]         = useState<ContactList[]>([]);
   const [templates, setTemplates] = useState<Template[]>([]);
+
+  // Send a one-off test copy of the current subject/body to any address,
+  // without touching campaign status or recipient lists.
+  const [testEmail, setTestEmail]           = useState('');
+  const [testSending, setTestSending]       = useState(false);
+  const [testResult, setTestResult]         = useState<{ ok: boolean; message: string } | null>(null);
 
   // Normalise initial: support old single account_id for backwards compat
   const normaliseInitial = (init?: Partial<CampaignFormData & { account_id?: string }>): Partial<CampaignFormData> => {
@@ -165,6 +171,45 @@ export default function CampaignForm({ mode, campaignId, initial }: Props) {
     } catch (e: unknown) {
       setSendError(e instanceof Error ? e.message : 'Failed to send');
       setSending(false);
+    }
+  };
+
+  const handleSendTest = async () => {
+    const email = testEmail.trim();
+    if (!email) { setTestResult({ ok: false, message: 'Enter an email address first' }); return; }
+    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) { setTestResult({ ok: false, message: 'That doesn\'t look like a valid email address' }); return; }
+    if (form.account_ids.length === 0) { setTestResult({ ok: false, message: 'Select a sending account first' }); return; }
+    if (!form.subject.trim() || !form.html_body.trim()) { setTestResult({ ok: false, message: 'Add a subject and email body first' }); return; }
+
+    setTestSending(true);
+    setTestResult(null);
+    try {
+      const account = accounts.find(a => a.id === form.account_ids[0]);
+      // Test emails use placeholder values for any {{first_name}} etc.
+      // merge tags so the layout can be checked even with no real contact.
+      const previewHtml = form.html_body
+        .replace(/\{\{first_name\}\}/g, 'Test')
+        .replace(/\{\{last_name\}\}/g, 'User')
+        .replace(/\{\{email\}\}/g, email);
+      const res = await fetch('/api/send/now', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          account_id: form.account_ids[0],
+          to: email,
+          subject: `[TEST] ${form.subject}`,
+          html: previewHtml,
+          from_name: account?.name,
+          from_email: account?.email,
+        }),
+      });
+      const data = await res.json();
+      if (data.success) setTestResult({ ok: true, message: `Test email sent to ${email}` });
+      else setTestResult({ ok: false, message: data.error ?? 'Failed to send test email' });
+    } catch (e: unknown) {
+      setTestResult({ ok: false, message: e instanceof Error ? e.message : 'Failed to send test email' });
+    } finally {
+      setTestSending(false);
     }
   };
 
@@ -352,6 +397,39 @@ export default function CampaignForm({ mode, campaignId, initial }: Props) {
             <p className="text-xs text-gray-400 mt-1">
               Use {`{{first_name}}`}, {`{{last_name}}`}, {`{{email}}`} for personalisation
             </p>
+          </div>
+
+          {/* Test email */}
+          <div className="pt-2 border-t border-gray-100">
+            <label className="block text-sm font-medium text-gray-700 mb-1">Send a test email</label>
+            <p className="text-xs text-gray-400 mb-2">
+              Sends the current subject and body to any address you enter — doesn't affect the campaign or count against recipients.
+            </p>
+            <div className="flex gap-2">
+              <input
+                type="email"
+                className="input flex-1"
+                placeholder="you@example.com"
+                value={testEmail}
+                onChange={e => { setTestEmail(e.target.value); setTestResult(null); }}
+                onKeyDown={e => e.key === 'Enter' && handleSendTest()}
+              />
+              <button
+                type="button"
+                onClick={handleSendTest}
+                disabled={testSending}
+                className="btn-secondary shrink-0"
+              >
+                {testSending ? <Loader2 size={14} className="animate-spin" /> : <Mail size={14} />}
+                {testSending ? 'Sending...' : 'Send Test'}
+              </button>
+            </div>
+            {testResult && (
+              <p className={`text-xs mt-2 flex items-center gap-1.5 ${testResult.ok ? 'text-green-600' : 'text-red-500'}`}>
+                {testResult.ok ? <CheckCircle size={12} /> : <AlertCircle size={12} />}
+                {testResult.message}
+              </p>
+            )}
           </div>
         </div>
 
