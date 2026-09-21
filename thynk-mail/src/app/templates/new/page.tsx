@@ -3,6 +3,7 @@ import { useState, useRef, useEffect } from 'react';
 import { useRouter } from 'next/navigation';
 import { ArrowLeft, Save, Plus, Trash2, MoveUp, MoveDown, Type, Image, Square, Minus, AlignLeft, Code2, Download } from 'lucide-react';
 import Link from 'next/link';
+import { isFullHtmlDocument, unwrapNestedDocuments } from '@/lib/html-unwrap';
 
 type BlockType = 'heading' | 'text' | 'button' | 'image' | 'divider' | 'spacer' | 'columns' | 'html';
 
@@ -129,20 +130,9 @@ ${block.content}
   }
 }
 
-// Detects markup that is already a complete HTML document (has its own
-// <html>/<!DOCTYPE> wrapper) rather than a fragment meant to be dropped into
-// one of our blocks. Without this check, pasting a full document into an
-// "html" block and saving — then later re-opening that template for editing
-// — nests a fresh copy of the standard wrapper (and its 32px padding)
-// inside itself on every single save, which is what produced the growing
-// blank space at the top/bottom of the email each time it was edited.
-function isFullHtmlDocument(html: string): boolean {
-  return /<!doctype\s+html|<html[\s>]/i.test(html);
-}
-
 function buildFullHtml(blocks: Block[]): string {
   if (blocks.length === 1 && blocks[0].type === 'html' && isFullHtmlDocument(blocks[0].content)) {
-    return blocks[0].content;
+    return unwrapNestedDocuments(blocks[0].content);
   }
   return `<!DOCTYPE html>
 <html><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1.0"></head>

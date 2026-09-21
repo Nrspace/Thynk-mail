@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { createServerClient } from '@/lib/supabase';
 import { extractVariables } from '@/lib/template-renderer';
+import { unwrapNestedDocuments } from '@/lib/html-unwrap';
 import { revalidatePath } from 'next/cache';
 import { requireProjectContext } from '@/lib/api-auth';
 
@@ -15,6 +16,16 @@ export async function GET(_req: NextRequest, { params }: Params) {
   const { data, error } = await db
     .from('templates').select('*').eq('id', params.id).eq('team_id', projectId).single();
   if (error) return NextResponse.json({ error: error.message }, { status: 404 });
+
+  // See templates/route.ts GET — heal + persist any nested-wrapper corruption
+  // from before this fix, so the editor and anything reading this template
+  // always sees (and works from) the clean single-wrapped version.
+  const clean = unwrapNestedDocuments(data.html_body ?? '');
+  if (clean !== data.html_body) {
+    await db.from('templates').update({ html_body: clean }).eq('id', params.id).eq('team_id', projectId);
+    data.html_body = clean;
+  }
+
   return NextResponse.json(data);
 }
 

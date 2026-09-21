@@ -3,6 +3,7 @@ import { useState, useEffect, useRef } from 'react';
 import { useRouter } from 'next/navigation';
 import { ArrowLeft, Save, Trash2, Plus, MoveUp, MoveDown, Type, Image, Square, Minus, AlignLeft, Code2, Download } from 'lucide-react';
 import Link from 'next/link';
+import { isFullHtmlDocument, unwrapNestedDocuments } from '@/lib/html-unwrap';
 
 type BlockType = 'heading' | 'text' | 'button' | 'image' | 'divider' | 'spacer' | 'columns' | 'html';
 
@@ -68,13 +69,6 @@ function renderBlockHtml(block: Block): string {
   }
 }
 
-// Detects markup that is already a complete HTML document (has its own
-// <html>/<!DOCTYPE> wrapper) rather than a fragment meant to be dropped into
-// one of our blocks.
-function isFullHtmlDocument(html: string): boolean {
-  return /<!doctype\s+html|<html[\s>]/i.test(html);
-}
-
 function buildFullHtml(blocks: Block[]): string {
   // Editing an existing template loads its saved html_body into a single
   // 'html' block (see the load effect below) so it round-trips exactly.
@@ -86,7 +80,7 @@ function buildFullHtml(blocks: Block[]): string {
   // visible blank space. If the whole template is just one already-complete
   // HTML document, save it as-is instead of wrapping it a second time.
   if (blocks.length === 1 && blocks[0].type === 'html' && isFullHtmlDocument(blocks[0].content)) {
-    return blocks[0].content;
+    return unwrapNestedDocuments(blocks[0].content);
   }
   return `<!DOCTYPE html><html><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1.0"></head><body style="margin:0;padding:0;background:#f3f4f6;font-family:sans-serif;"><table width="100%" cellpadding="0" cellspacing="0" style="background:#f3f4f6;"><tr><td align="center" style="padding:32px 16px;"><table width="600" cellpadding="0" cellspacing="0" style="max-width:600px;width:100%;background:#ffffff;border-radius:8px;overflow:hidden;box-shadow:0 1px 3px rgba(0,0,0,0.1);"><tr><td>${blocks.map(renderBlockHtml).join('')}</td></tr></table></td></tr></table></body></html>`;
 }
@@ -236,7 +230,7 @@ export default function EditTemplatePage({ params }: PageProps) {
           setBlocks([{
             id: uid(),
             type: 'html',
-            content: data.html_body,
+            content: unwrapNestedDocuments(data.html_body),
             style: { padding: '0', background: '#ffffff' },
           }]);
         }
