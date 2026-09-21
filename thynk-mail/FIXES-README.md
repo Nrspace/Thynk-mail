@@ -78,10 +78,36 @@ that same standard shell — nesting a fresh copy of the wrapper and its
 padding inside the previous one. Each edit-save cycle added another layer,
 which is exactly the growing blank space you saw.
 
-**Fix:** `buildFullHtml()` in both `src/app/templates/new/page.tsx` and
-`src/app/templates/[id]/edit/page.tsx` now detects when the template is a
-single HTML block that is *already* a full document (has its own
-`<html>`/`<!DOCTYPE>`) and saves it as-is instead of wrapping it again.
+**Fix — two parts:**
+1. **Stops it from happening again:** `buildFullHtml()` in both
+   `src/app/templates/new/page.tsx` and `src/app/templates/[id]/edit/page.tsx`
+   now detects when the template is a single HTML block that is *already* a
+   full document (has its own `<html>`/`<!DOCTYPE>`) and saves it as-is
+   instead of wrapping it again.
+2. **Heals templates that were already corrupted by the bug before this
+   fix existed** (this is the part that was missing before — stopping new
+   growth doesn't remove padding that's already baked into a template from
+   earlier edits): added `src/lib/html-unwrap.ts` with
+   `unwrapNestedDocuments()`, which detects multiple nested copies of the
+   wrapper and strips them back down to just the innermost one containing
+   the real content. This runs:
+   - in the template editor, both on load and on save;
+   - server-side in `GET /api/templates` and `GET /api/templates/[id]`,
+     which **permanently rewrites the healed value back to the database**
+     the first time each corrupted template is read — so a campaign's
+     "Load from Template" dropdown (which reads `html_body` straight from
+     this API, bypassing the editor) also gets the clean version instead of
+     copying the padding bug into a new campaign.
+
+   This is safe to run on an already-healthy (single-wrapped) template —
+   it's a no-op in that case — and it's idempotent, so re-opening an
+   already-healed template does nothing further.
+
+   Tested against a simulated template that had been wrapped 4 times (i.e.
+   edited-and-saved 3 times after its original save): `unwrapNestedDocuments`
+   correctly collapsed it straight back down to the single-layer original,
+   with the real content intact.
+
 
 ---
 
