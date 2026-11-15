@@ -138,7 +138,10 @@ async function processCampaignChunkLocked(
   emit('status', { status: 'sending', accounts: activeAccounts.length });
 
   const listIds: string[] = campaign.list_ids ?? [];
-  if (!listIds.length) return fail('No recipient lists selected');
+  // Sequence follow-up steps (step 2+) take their recipients from the send
+  // logs of an earlier step instead of from contact lists.
+  const audienceCampaignId: string | null = campaign.audience_campaign_id ?? null;
+  if (!audienceCampaignId && !listIds.length) return fail('No recipient lists selected');
 
   // Has this campaign already been initialized (eligible list computed,
   // 'queued' send_logs created for everyone)? A cheap count-only query tells
@@ -156,17 +159,60 @@ async function processCampaignChunkLocked(
 
   if (!existingLogCount) {
     // ---- One-time setup: runs exactly once per campaign, on its very first tick ----
-    let clRows: { contact_id: string }[];
-    try {
-      clRows = await fetchAllRows<{ contact_id: string }>((from, to) =>
-        db.from('contact_lists').select('contact_id').in('list_id', listIds).range(from, to)
-      );
-    } catch (err: unknown) {
-      return fail(`Failed to load contact lists: ${err instanceof Error ? err.message : String(err)}`);
-    }
+    // A sequence follow-up step with nobody left to email is a normal outcome
+    // (e.g. "only people who didn't open" and everyone opened) — close it out
+    // as sent-to-0 so the sequence moves on, rather than marking it failed.
+    const finishEmptyAudience = async (): Promise<ChunkOutcome> => {
+      await db.from('campaigns').update({
+        status: 'sent', total_recipients: 0, sent_count: 0, sent_at: new Date().toISOString(),
+      }).eq('id', campaignId);
+      emit('done', { success: true, sent: 0, failed: 0, unsubscribed: 0, total: 0 });
+      return { ok: true, stopped: true, reason: 'done', sent: 0, failed: 0, unsubscribed: 0, total: 0 };
+    };
 
-    const contactIds = Array.from(new Set(clRows.map(r => r.contact_id)));
-    if (!contactIds.length) return fail('No contacts in selected lists');
+    let contactIds: string[];
+    if (audienceCampaignId) {
+      try {
+        const srcLogs = await fetchAllRows<{ contact_id: string; opened_at: string | null; clicked_at: string | null }>((from, to) =>
+          db.from('send_logs').select('contact_id, opened_at, clicked_at')
+            .eq('campaign_id', audienceCampaignId)
+            .in('status', ['sent', 'delivered', 'opened', 'clicked'])
+            .order('id').range(from, to)
+        );
+        const cond = campaign.audience_condition ?? 'all';
+        // A click implies the email was opened even if the tracking pixel was blocked.
+        const engaged = (l: { opened_at: string | null; clicked_at: string | null }) => ({
+          opened: !!(l.opened_at || l.clicked_at), clicked: !!l.clicked_at,
+        });
+        contactIds = Array.from(new Set(
+          srcLogs.filter(l => {
+            const e = engaged(l);
+            switch (cond) {
+              case 'opened':      return e.opened;
+              case 'not_opened':  return !e.opened;
+              case 'clicked':     return e.clicked;
+              case 'not_clicked': return !e.clicked;
+              default:            return true;
+            }
+          }).map(l => l.contact_id)
+        ));
+      } catch (err: unknown) {
+        return fail(`Failed to load previous sequence step recipients: ${err instanceof Error ? err.message : String(err)}`);
+      }
+      if (!contactIds.length) return finishEmptyAudience();
+    } else {
+      let clRows: { contact_id: string }[];
+      try {
+        clRows = await fetchAllRows<{ contact_id: string }>((from, to) =>
+          db.from('contact_lists').select('contact_id').in('list_id', listIds).range(from, to)
+        );
+      } catch (err: unknown) {
+        return fail(`Failed to load contact lists: ${err instanceof Error ? err.message : String(err)}`);
+      }
+
+      contactIds = Array.from(new Set(clRows.map(r => r.contact_id)));
+      if (!contactIds.length) return fail('No contacts in selected lists');
+    }
 
     const contacts = await runInChunks(contactIds, DB_IN_CHUNK_SIZE, async (chunk) => {
       const { data, error } = await db.from('contacts').select('*').in('id', chunk).eq('is_subscribed', true);
@@ -186,7 +232,9 @@ async function processCampaignChunkLocked(
     }
 
     const eligible = contacts.filter((c: Contact) => !suppressed.has(c.email));
-    if (!eligible.length) return fail('All contacts are suppressed or unsubscribed');
+    if (!eligible.length) {
+      return audienceCampaignId ? finishEmptyAudience() : fail('All contacts are suppressed or unsubscribed');
+    }
 
     total = eligible.length;
     await db.from('campaigns').update({ total_recipients: total }).eq('id', campaignId);
@@ -302,7 +350,7 @@ async function processCampaignChunkLocked(
 
     const totalRate = currentTotalRate();
     if (totalRate <= 0) {
-      await db.from('campaigns').update({ status: 'paused', sent_count: sentCount }).eq('id', campaignId);
+      await db.from('campaigns').update({ status: 'paused', pause_reason: 'daily_limit', sent_count: sentCount }).eq('id', campaignId);
       const message = `Daily sending limit reached. ${total - sentCount - failCount - unsubscribedCount} contacts queued for tomorrow.`;
       emit('done', { success: true, sent: sentCount, failed: failCount, total, paused: true, message });
       return { ok: true, stopped: true, reason: 'paused', message, sent: sentCount, failed: failCount, total };
@@ -397,7 +445,7 @@ async function processCampaignChunkLocked(
         emit('warn', { error: errMsg, to: contact.email });
 
         if (consecutiveFails >= 5) {
-          await db.from('campaigns').update({ status: 'paused', sent_count: sentCount }).eq('id', campaignId);
+          await db.from('campaigns').update({ status: 'paused', pause_reason: 'failures', sent_count: sentCount }).eq('id', campaignId);
           const message = `Paused after ${consecutiveFails} consecutive failures. Last error: ${errMsg}`;
           emit('done', { success: false, sent: sentCount, failed: failCount, total, paused: true, message });
           return { ok: false, stopped: true, reason: 'paused', message, sent: sentCount, failed: failCount, total };

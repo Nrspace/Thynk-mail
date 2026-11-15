@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { createServerClient } from '@/lib/supabase';
 import { processCampaignChunk } from '@/lib/campaign-sender';
+import { runSequenceTick, type SequenceTickResult } from '@/lib/sequence-scheduler';
 
 export const maxDuration = 300;
 
@@ -33,6 +34,20 @@ export async function GET(req: NextRequest) {
   const db = createServerClient();
   const tickStart = Date.now();
 
+  // Sequence scheduler: start any sequence step whose time has arrived (and
+  // resume steps that were only waiting on the daily send limit) BEFORE we
+  // load the 'sending' campaigns below, so a step that just became due is
+  // picked up in this very same tick. Failures here must never stop the
+  // normal campaign sending that follows.
+  let sequences: SequenceTickResult | { error: string } = { activated: 0, resumed: 0, completed: 0, paused: 0 };
+  try {
+    sequences = await runSequenceTick();
+  } catch (err: unknown) {
+    const msg = err instanceof Error ? err.message : String(err);
+    console.error('[cron/send-tick] sequence scheduler failed:', msg);
+    sequences = { error: msg };
+  }
+
   const { data: campaigns, error } = await db
     .from('campaigns')
     .select('id, team_id')
@@ -56,5 +71,5 @@ export async function GET(req: NextRequest) {
     }
   }
 
-  return NextResponse.json({ processed: results.length, results });
+  return NextResponse.json({ processed: results.length, results, sequences });
 }

@@ -108,6 +108,49 @@ export interface Campaign {
   click_count?: number;
   bounce_count?: number;
   unsubscribe_count?: number;
+  // sequence membership (null for ordinary campaigns)
+  sequence_id?: string | null;
+  sequence_step?: number | null;
+  audience_campaign_id?: string | null;
+  audience_condition?: string | null;
+  pause_reason?: string | null;
+}
+
+export type SequenceStatus = 'draft' | 'active' | 'paused' | 'completed' | 'cancelled';
+export type StepAudience = 'all' | 'not_opened' | 'opened' | 'not_clicked' | 'clicked';
+
+export interface Sequence {
+  id: string;
+  team_id: string;
+  name: string;
+  description?: string | null;
+  status: SequenceStatus;
+  list_ids: string[];
+  account_ids: string[];
+  reply_to?: string | null;
+  timezone: string;
+  start_at?: string | null;
+  launched_at?: string | null;
+  completed_at?: string | null;
+  status_note?: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface SequenceStep {
+  id: string;
+  sequence_id: string;
+  step_number: number;
+  subject: string;
+  html_body: string;
+  text_body?: string | null;
+  template_id?: string | null;
+  delay_amount: number;
+  delay_unit: 'hours' | 'days';
+  send_time?: string | null;
+  audience: StepAudience;
+  campaign_id?: string | null;
+  scheduled_at?: string | null;
 }
 
 export interface SendLog {

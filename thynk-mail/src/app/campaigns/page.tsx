@@ -1,6 +1,6 @@
 import { createServerClient } from '@/lib/supabase';
 import Link from 'next/link';
-import { Send, Plus, Calendar, Loader2 } from 'lucide-react';
+import { Send, Plus, Calendar, Loader2, Workflow } from 'lucide-react';
 import { redirect } from 'next/navigation';
 import { getCurrentUser, getActiveProjectId } from '@/lib/session';
 import CampaignActions from '@/components/campaigns/CampaignActions';
@@ -206,6 +206,11 @@ export default async function CampaignsPage() {
                         {c.name}
                       </Link>
                       <p className="text-xs text-gray-400 mt-0.5 truncate max-w-xs">{c.subject}</p>
+                      {c.sequence_id && (
+                        <Link href={`/sequences/${c.sequence_id}`} className="inline-flex items-center gap-1 mt-1 text-[11px] font-medium text-teal-600 hover:underline">
+                          <Workflow size={10} /> Sequence · Email {c.sequence_step}
+                        </Link>
+                      )}
                     </td>
                     <td className="px-4 py-3.5">
                       <span className={statusColors[c.status] ?? 'badge-gray'}>{c.status}</span>
