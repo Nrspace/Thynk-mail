@@ -49,6 +49,10 @@ export async function PATCH(req: NextRequest, { params }: Params) {
   // Sanitize — convert empty strings to null for nullable fields
   const sanitized = { ...body };
   if (await liveSequenceOf(db, params.id, projectId)) {
+    // A bare status change (Pause / Cancel / Resume buttons) must go through the sequence.
+    if (body.status && body.subject === undefined && body.html_body === undefined) {
+      return NextResponse.json({ error: 'This email belongs to a running sequence. Use Pause / Resume / Cancel on the Sequences page.' }, { status: 409 });
+    }
     for (const f of SEQUENCE_LOCKED_FIELDS) delete sanitized[f];
   }
   const nullableFields = ['scheduled_at', 'reply_to', 'template_id', 'text_body'];

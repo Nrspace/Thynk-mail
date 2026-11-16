@@ -157,6 +157,16 @@ async function processCampaignChunkLocked(
 
   let total = campaign.total_recipients ?? 0;
 
+  // A sequence follow-up must wait until the step it is based on has fully sent,
+  // otherwise "who opened / didn't open" would be computed from an incomplete list.
+  if (!existingLogCount && audienceCampaignId) {
+    const { data: src } = await db.from('campaigns').select('status').eq('id', audienceCampaignId).maybeSingle();
+    if (!src || src.status !== 'sent') {
+      emit('status', { status: 'waiting', message: 'Waiting for the previous email in the sequence to finish' });
+      return { ok: true, stopped: true, reason: 'paused', message: 'Waiting for previous sequence email', sent: 0, failed: 0, total: 0 };
+    }
+  }
+
   if (!existingLogCount) {
     // ---- One-time setup: runs exactly once per campaign, on its very first tick ----
     // A sequence follow-up step with nobody left to email is a normal outcome

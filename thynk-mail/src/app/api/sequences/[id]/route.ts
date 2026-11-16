@@ -70,6 +70,7 @@ export async function DELETE(_req: NextRequest, { params }: Params) {
   }
   // Remove steps that never sent; campaigns that already went out stay in Campaigns/Reports.
   await db.from('campaigns').delete().eq('sequence_id', seq.id).in('status', ['scheduled', 'draft']);
+  await db.from('campaigns').delete().eq('sequence_id', seq.id).in('status', ['paused', 'failed', 'sending']).eq('sent_count', 0);
   const { error } = await db.from('sequences').delete().eq('id', seq.id);
   if (error) return NextResponse.json({ error: error.message }, { status: 500 });
   return NextResponse.json({ success: true });

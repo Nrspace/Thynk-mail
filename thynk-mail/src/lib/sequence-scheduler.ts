@@ -222,6 +222,7 @@ export async function cancelSequence(projectId: string, sequenceId: string): Pro
   if (!['active', 'paused'].includes(seq.status)) return fail('Only an active or paused sequence can be cancelled', 409);
   // Steps that never started are removed; anything mid-send is stopped (and can be resumed from the Campaigns page).
   await db.from('campaigns').delete().eq('sequence_id', sequenceId).eq('status', 'scheduled');
+  await db.from('campaigns').delete().eq('sequence_id', sequenceId).eq('status', 'sending').eq('sent_count', 0);
   await db.from('campaigns').update({ status: 'paused', pause_reason: 'sequence_cancelled' })
     .eq('sequence_id', sequenceId).eq('status', 'sending');
   await db.from('sequences').update({ status: 'cancelled', status_note: 'Cancelled', updated_at: new Date().toISOString() }).eq('id', sequenceId);

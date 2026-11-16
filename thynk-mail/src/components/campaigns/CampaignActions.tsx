@@ -1,8 +1,8 @@
 'use client';
-import { useState } from 'react';
+import { useState, useRef, useEffect } from 'react';
 import { useRouter } from 'next/navigation';
 import {
-  Edit, Copy, Send, Trash2, Loader2, MoreHorizontal,
+  Edit, Copy, Send, Trash2, Loader2, MoreHorizontal, Workflow,
   CheckCircle, XCircle, Pause, Play, Ban, Calendar,
 } from 'lucide-react';
 import Link from 'next/link';
@@ -13,6 +13,7 @@ interface Campaign {
   reply_to?: string; html_body: string;
   account_id: string; account_ids?: string[];
   list_ids: string[]; template_id?: string; scheduled_at?: string;
+  sequence_id?: string | null;
 }
 
 interface SendState {
@@ -27,6 +28,8 @@ interface SendState {
 export default function CampaignActions({ campaign }: { campaign: Campaign }) {
   const router = useRouter();
   const [open, setOpen]       = useState(false);
+  const btnRef = useRef<HTMLButtonElement>(null);
+  const [menuPos, setMenuPos] = useState<React.CSSProperties>({});
   const [copying, setCopying] = useState(false);
   const [actioning, setActioning] = useState(false);
   const [sendState, setSendState] = useState<SendState>({
@@ -39,6 +42,26 @@ export default function CampaignActions({ campaign }: { campaign: Campaign }) {
   const canResume = campaign.status === 'paused';
   const canCancel = ['sending', 'paused', 'scheduled'].includes(campaign.status);
   const isSending = sendState.phase === 'sending';
+
+  // The "..." menu is positioned against the viewport (position: fixed) so it is
+  // never clipped by the rounded, overflow-hidden cards the rows live in.
+  function toggleMenu() {
+    if (!open && btnRef.current) {
+      const r = btnRef.current.getBoundingClientRect();
+      const MENU_H = 340;
+      const flipUp = window.innerHeight - r.bottom < MENU_H && r.top > MENU_H;
+      const right = Math.max(8, window.innerWidth - r.right);
+      setMenuPos(flipUp ? { bottom: window.innerHeight - r.top + 4, right } : { top: r.bottom + 4, right });
+    }
+    setOpen(v => !v);
+  }
+  useEffect(() => {
+    if (!open) return;
+    const close = () => setOpen(false);
+    window.addEventListener('scroll', close, true);
+    window.addEventListener('resize', close);
+    return () => { window.removeEventListener('scroll', close, true); window.removeEventListener('resize', close); };
+  }, [open]);
 
   // Shared SSE-consuming loop for both "Send now" and "Resume". Handles the
   // 'chunk' event emitted when a single invocation hits its execution-time
@@ -166,11 +189,15 @@ export default function CampaignActions({ campaign }: { campaign: Campaign }) {
     setOpen(false);
     setActioning(true);
     try {
-      await fetch(`/api/campaigns/${campaign.id}`, {
+      const res = await fetch(`/api/campaigns/${campaign.id}`, {
         method: 'PATCH',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ status: newStatus }),
       });
+      if (!res.ok) {
+        const d = await res.json().catch(() => ({}));
+        alert(d.error ?? `${label} failed`);
+      }
       router.refresh();
     } finally {
       setActioning(false);
@@ -202,7 +229,11 @@ export default function CampaignActions({ campaign }: { campaign: Campaign }) {
   async function handleDelete() {
     if (!confirm(`Delete "${campaign.name}"? This cannot be undone.`)) return;
     setOpen(false);
-    await fetch(`/api/campaigns/${campaign.id}`, { method: 'DELETE' });
+    const res = await fetch(`/api/campaigns/${campaign.id}`, { method: 'DELETE' });
+    if (!res.ok) {
+      const d = await res.json().catch(() => ({}));
+      alert(d.error ?? 'Delete failed');
+    }
     router.refresh();
   }
 
@@ -324,14 +355,20 @@ export default function CampaignActions({ campaign }: { campaign: Campaign }) {
         )}
 
         <div className="relative">
-          <button onClick={() => setOpen(v => !v)}
+          <button ref={btnRef} onClick={toggleMenu}
             className="p-1.5 rounded text-gray-400 hover:text-gray-600 hover:bg-gray-100 transition-colors" title="More">
             <MoreHorizontal size={14} />
           </button>
           {open && (
             <>
-              <div className="fixed inset-0 z-10" onClick={() => setOpen(false)} />
-              <div className="absolute right-0 top-8 z-20 bg-white rounded-xl border border-gray-100 shadow-lg py-1 w-48">
+              <div className="fixed inset-0 z-40" onClick={() => setOpen(false)} />
+              <div style={menuPos} className="fixed z-50 bg-white rounded-xl border border-gray-100 shadow-lg py-1 w-48">
+                {campaign.sequence_id && (
+                  <Link href={`/sequences/${campaign.sequence_id}`} onClick={() => setOpen(false)}
+                    className="flex items-center gap-2.5 px-4 py-2 text-sm text-teal-700 hover:bg-teal-50 border-b border-gray-100">
+                    <Workflow size={13} /> Open sequence
+                  </Link>
+                )}
                 {canEdit && (
                   <Link href={`/campaigns/${campaign.id}/edit`} onClick={() => setOpen(false)}
                     className="flex items-center gap-2.5 px-4 py-2 text-sm text-gray-700 hover:bg-gray-50">
