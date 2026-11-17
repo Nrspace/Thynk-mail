@@ -199,7 +199,19 @@ export async function pauseSequence(projectId: string, sequenceId: string, note 
   await db.from('sequences').update({ status: 'paused', status_note: note, updated_at: new Date().toISOString() }).eq('id', sequenceId);
   await db.from('campaigns').update({ status: 'paused', pause_reason: 'sequence_paused' })
     .eq('sequence_id', sequenceId).eq('status', 'sending');
+  await holdScheduledEmails(sequenceId);
   return { ok: true };
+}
+
+/**
+ * Emails that are still waiting for their send time are taken off the schedule
+ * while the sequence is paused (status 'paused', reason 'sequence_hold') so they
+ * no longer show up as upcoming. Resume puts them back on the schedule.
+ */
+async function holdScheduledEmails(sequenceId: string) {
+  const db = createServerClient();
+  await db.from('campaigns').update({ status: 'paused', pause_reason: 'sequence_hold' })
+    .eq('sequence_id', sequenceId).eq('status', 'scheduled');
 }
 
 export async function resumeSequence(projectId: string, sequenceId: string): Promise<Result> {
@@ -207,6 +219,9 @@ export async function resumeSequence(projectId: string, sequenceId: string): Pro
   const { data: seq } = await db.from('sequences').select('id, status').eq('id', sequenceId).eq('team_id', projectId).maybeSingle();
   if (!seq) return fail('Sequence not found', 404);
   if (seq.status !== 'paused') return fail('Only a paused sequence can be resumed', 409);
+  // Held emails go back on the schedule (any whose time passed while paused start on the next tick).
+  await db.from('campaigns').update({ status: 'scheduled', pause_reason: null })
+    .eq('sequence_id', sequenceId).eq('status', 'paused').eq('pause_reason', 'sequence_hold');
   // Paused or failed steps go back to 'sending' (already-sent contacts are skipped by the engine).
   // Steps that are still waiting for their time stay 'scheduled'; any whose time passed while paused start on the next tick.
   await db.from('campaigns').update({ status: 'sending', pause_reason: null })
@@ -215,14 +230,21 @@ export async function resumeSequence(projectId: string, sequenceId: string): Pro
   return { ok: true };
 }
 
+/** Delete every email of the sequence that has not sent anything (scheduled, held, or stuck at 0 sent). */
+async function removeUnsentEmails(sequenceId: string) {
+  const db = createServerClient();
+  await db.from('campaigns').delete().eq('sequence_id', sequenceId).eq('status', 'scheduled');
+  await db.from('campaigns').delete().eq('sequence_id', sequenceId).eq('pause_reason', 'sequence_hold');
+  await db.from('campaigns').delete().eq('sequence_id', sequenceId).in('status', ['sending', 'paused', 'failed', 'draft']).eq('sent_count', 0);
+}
+
 export async function cancelSequence(projectId: string, sequenceId: string): Promise<Result> {
   const db = createServerClient();
   const { data: seq } = await db.from('sequences').select('id, status').eq('id', sequenceId).eq('team_id', projectId).maybeSingle();
   if (!seq) return fail('Sequence not found', 404);
   if (!['active', 'paused'].includes(seq.status)) return fail('Only an active or paused sequence can be cancelled', 409);
   // Steps that never started are removed; anything mid-send is stopped (and can be resumed from the Campaigns page).
-  await db.from('campaigns').delete().eq('sequence_id', sequenceId).eq('status', 'scheduled');
-  await db.from('campaigns').delete().eq('sequence_id', sequenceId).eq('status', 'sending').eq('sent_count', 0);
+  await removeUnsentEmails(sequenceId);
   await db.from('campaigns').update({ status: 'paused', pause_reason: 'sequence_cancelled' })
     .eq('sequence_id', sequenceId).eq('status', 'sending');
   await db.from('sequences').update({ status: 'cancelled', status_note: 'Cancelled', updated_at: new Date().toISOString() }).eq('id', sequenceId);
@@ -270,6 +292,7 @@ export async function runSequenceTick(): Promise<SequenceTickResult> {
 
   const pauseSeq = async (id: string, note: string) => {
     await db.from('sequences').update({ status: 'paused', status_note: note, updated_at: nowIso }).eq('id', id).eq('status', 'active');
+    await holdScheduledEmails(id);
     out.paused++;
   };
 
@@ -329,4 +352,22 @@ export async function runSequenceTick(): Promise<SequenceTickResult> {
   }
 
   return out;
+}
+
+/**
+ * Delete a sequence in any state. A running sequence is stopped first: emails not yet
+ * sent are removed, an email that is mid-send is paused (its already-sent history is kept
+ * in Campaigns and Reports).
+ */
+export async function deleteSequence(projectId: string, sequenceId: string): Promise<Result> {
+  const db = createServerClient();
+  const { data: seq } = await db.from('sequences').select('id').eq('id', sequenceId).eq('team_id', projectId).maybeSingle();
+  if (!seq) return fail('Sequence not found', 404);
+  await db.from('sequences').update({ status: 'cancelled', updated_at: new Date().toISOString() }).eq('id', sequenceId); // stop the scheduler first
+  await db.from('campaigns').update({ status: 'paused', pause_reason: 'sequence_cancelled' })
+    .eq('sequence_id', sequenceId).eq('status', 'sending').gt('sent_count', 0);
+  await removeUnsentEmails(sequenceId);
+  const { error } = await db.from('sequences').delete().eq('id', sequenceId);
+  if (error) return fail(error.message, 500);
+  return { ok: true };
 }

@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { createServerClient } from '@/lib/supabase';
 import { requireProjectContext } from '@/lib/api-auth';
-import { normaliseSteps, checkOwnership, resolveStartAt } from '@/lib/sequence-scheduler';
+import { normaliseSteps, checkOwnership, resolveStartAt, deleteSequence } from '@/lib/sequence-scheduler';
 import { isValidTimezone, MAX_SEQUENCE_STEPS } from '@/lib/sequence-time';
 
 interface Params { params: { id: string } }
@@ -62,16 +62,7 @@ export async function PATCH(req: NextRequest, { params }: Params) {
 export async function DELETE(_req: NextRequest, { params }: Params) {
   const guard = await requireProjectContext();
   if (!guard.ok) return guard.response;
-  const db = createServerClient();
-  const { data: seq } = await db.from('sequences').select('id, status').eq('id', params.id).eq('team_id', guard.ctx.projectId).maybeSingle();
-  if (!seq) return NextResponse.json({ error: 'Sequence not found' }, { status: 404 });
-  if (['active', 'paused'].includes(seq.status)) {
-    return NextResponse.json({ error: 'Cancel the sequence before deleting it' }, { status: 409 });
-  }
-  // Remove steps that never sent; campaigns that already went out stay in Campaigns/Reports.
-  await db.from('campaigns').delete().eq('sequence_id', seq.id).in('status', ['scheduled', 'draft']);
-  await db.from('campaigns').delete().eq('sequence_id', seq.id).in('status', ['paused', 'failed', 'sending']).eq('sent_count', 0);
-  const { error } = await db.from('sequences').delete().eq('id', seq.id);
-  if (error) return NextResponse.json({ error: error.message }, { status: 500 });
+  const result = await deleteSequence(guard.ctx.projectId, params.id);
+  if (!result.ok) return NextResponse.json({ error: result.error }, { status: result.status });
   return NextResponse.json({ success: true });
 }

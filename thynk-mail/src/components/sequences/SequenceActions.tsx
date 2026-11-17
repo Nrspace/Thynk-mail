@@ -40,7 +40,10 @@ export default function SequenceActions({ id, name, status }: Props) {
   }
 
   async function remove() {
-    if (!confirm(`Delete "${name}"? Emails already sent stay in Campaigns and Reports. This cannot be undone.`)) return;
+    const running = status === 'active' || status === 'paused';
+    if (!confirm(running
+      ? `Delete "${name}"? The sequence stops now and every email that has not been sent yet is cancelled and removed. Emails already sent stay in Campaigns and Reports. This cannot be undone.`
+      : `Delete "${name}"? Emails already sent stay in Campaigns and Reports. This cannot be undone.`)) return;
     setBusy('delete'); setError('');
     try {
       const res = await fetch(`/api/sequences/${id}`, { method: 'DELETE' });
@@ -66,7 +69,7 @@ export default function SequenceActions({ id, name, status }: Props) {
         )}
         {status === 'active' && (
           <button disabled={!!busy} className="btn-secondary"
-            onClick={() => run('pause', `Pause "${name}"? Nothing more will be sent until you resume.`)}>
+            onClick={() => run('pause', `Pause "${name}"? Sending stops now and the emails still waiting are taken off the schedule. When you resume, they go back on the schedule.`)}>
             <Spin a="pause" />{busy !== 'pause' && <Pause size={14} />} Pause
           </button>
         )}
@@ -82,11 +85,9 @@ export default function SequenceActions({ id, name, status }: Props) {
             <Spin a="cancel" />{busy !== 'cancel' && <Ban size={14} />} Cancel
           </button>
         )}
-        {['draft', 'completed', 'cancelled'].includes(status) && (
-          <button disabled={!!busy} className="btn-secondary !text-red-600" onClick={remove}>
-            <Spin a="delete" />{busy !== 'delete' && <Trash2 size={14} />} Delete
-          </button>
-        )}
+        <button disabled={!!busy} className="btn-secondary !text-red-600" onClick={remove}>
+          <Spin a="delete" />{busy !== 'delete' && <Trash2 size={14} />} Delete
+        </button>
       </div>
       {error && <p className="text-xs text-red-600 max-w-sm text-right">{error}</p>}
     </div>
